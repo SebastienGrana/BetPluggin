@@ -3,16 +3,16 @@
 {% block content %}
   <quad pos="0 0" z-index="0" size="40 11.5" bgcolor="0F0F1AE0"/>
 
-  <quad pos="1.2 -1" z-index="1" size="8 2.6" bgcolor="{{ status_color }}"/>
+  <quad pos="1.2 -1.2" z-index="1" size="8 2.6" bgcolor="{{ status_color }}"/>
   <label pos="5.2 -2.3" z-index="2" size="8 2.6" textsize="1" halign="center" valign="center" textcolor="000000FF" text="{{ status }}"/>
 
-  <label pos="10.2 -1" z-index="1" size="28.8 2.6" textsize="1.05" valign="center" textcolor="CCCCCCFF"
+  <label pos="10.2 -2.4" z-index="1" size="28.8 2.6" textsize="1.05" valign="center" textcolor="CCCCCCFF"
          text="{{ period_label }}"/>
 
-  <label pos="1.2 -4.4" z-index="1" size="37.6 2.6" textsize="1.05" valign="center" textcolor="CCCCCCFF"
+  <label pos="1.2 -5.7" z-index="1" size="37.6 2.6" textsize="1.05" valign="center" textcolor="CCCCCCFF"
          text="Pot: {{ total_pot }} planets -- {{ bet_count }} {{ bet_word }}"/>
 
   <quad pos="0 -7.9" z-index="1" size="40 3.6" bgcolor="09F4FF33" action="{{ id }}__open_market" scriptevents="1"/>
-  <label pos="20 -9.7" z-index="2" size="38 3" textsize="1.1" halign="center" valign="center" textcolor="FFFFFFFF"
+  <label pos="20 -9.5" z-index="2" size="38 3" textsize="1.1" halign="center" valign="center" textcolor="FFFFFFFF"
          text="Open &#171; betting market &#187;" action="{{ id }}__open_market" scriptevents="1"/>
 {% endblock %}
