@@ -52,6 +52,9 @@ class BetplugginApp(AppConfig):
 		self.scope = Bet.SCOPE_MAP
 		self.market_open = False
 		self.market_manually_closed = False
+		# True only right after a (re)start, for the map that was already running when PyPlanet came back
+		# up -- see map_begin(). Cleared as soon as a market genuinely opens again (_open_market).
+		self.closed_for_reboot = False
 		self.current_round_number = None
 
 		# Confirmed bets in the market period currently open, not yet resolved.
@@ -96,8 +99,8 @@ class BetplugginApp(AppConfig):
 			Command(
 				command='bet', target=self.chat_bet,
 				description='Bet planets that a player will win the current period. Usage: /bet <login> <amount>'
-			).add_param(name='login', type=str, required=True, help='Login of the player you think will win.')
-			 .add_param(name='amount', type=int, required=True, help='Amount of planets to bet.'),
+			).add_param(name='login', type=str, required=False, help='Login of the player you think will win.')
+			 .add_param(name='amount', type=int, required=False, help='Amount of planets to bet.'),
 
 			Command(
 				command='betmarket', aliases=['market', 'odds'], target=self.chat_open_market,
@@ -165,6 +168,9 @@ class BetplugginApp(AppConfig):
 		# players who've already seen part of the run bet with information they shouldn't have. Betting
 		# resumes normally on the next real map/round start.
 		await self.map_begin(self.instance.map_manager.current_map, resuming=True)
+		await self._recover_bets_after_restart(self.instance.map_manager.current_map)
+		if self.widget:
+			await self.widget.display()
 
 	# ------------------------------------------------------------------
 	# Market lifecycle
@@ -177,6 +183,46 @@ class BetplugginApp(AppConfig):
 		if not self.market_open:
 			return False
 		return True
+
+	async def _recover_bets_after_restart(self, current_map):
+		"""
+		Called once at startup. A bet left in PENDING or ACTIVE state means the previous process
+		crashed or was restarted before that bet's map/round ever ended -- without this, it would sit
+		in the database forever, never paid out, lost, or refunded.
+
+		- Bets for the map that's still running: reload them into memory so they resolve normally at
+		  the next map_end/round_end, exactly as if the process had never restarted.
+		- Bets for any other (older) map: that period is definitely over and can never be resolved
+		  properly anymore, so refund them right away instead of leaving them stuck.
+		"""
+		orphaned = await Bet.execute(
+			Bet.select(Bet, Player).join(Player).where(Bet.state.in_([Bet.STATE_PENDING, Bet.STATE_ACTIVE]))
+		)
+		if not orphaned:
+			return
+
+		current_map_id = current_map.get_id()
+
+		for bet in orphaned:
+			if bet.map_id == current_map_id:
+				entry = dict(
+					bet=bet, player=bet.bettor, target_login=bet.target_login, amount=bet.amount,
+					odds=bet.odds, round_number=bet.round_number,
+				)
+				async with self.lock:
+					if bet.state == Bet.STATE_ACTIVE:
+						self.current_bets.append(entry)
+					else:
+						self.pending_stakes[bet.stake_bill_id] = entry
+			else:
+				bet.won = None
+				bet.payout = 0
+				bet.state = Bet.STATE_RESOLVED
+				await bet.save()
+				await self._refund(
+					bet.bettor, bet.amount,
+					"PyPlanet restarted after this bet's map already ended."
+				)
 
 	async def detect_scope(self):
 		try:
@@ -202,6 +248,7 @@ class BetplugginApp(AppConfig):
 				# Round-scoped (wait for the first `round_start` to open the market), or we're resuming
 				# mid-map after a (re)start -- either way, betting stays closed until the next real start.
 				self.market_open = False
+				self.closed_for_reboot = resuming
 
 		if self.widget:
 			await self.widget.display()
@@ -222,6 +269,7 @@ class BetplugginApp(AppConfig):
 		"""Must be called while holding self.lock."""
 		self.market_manually_closed = False
 		self.market_open = True
+		self.closed_for_reboot = False
 
 	async def on_scores(self, players, winner_player, **kwargs):
 		# Fired around every podium (each round in round-based modes, and around map end otherwise).
@@ -634,13 +682,28 @@ class BetplugginApp(AppConfig):
 	# ------------------------------------------------------------------
 
 	async def chat_bet(self, player, data, **kwargs):
+		if not data.login or not data.amount:
+			others = [p.login for p in self.instance.player_manager.online if p.login != player.login]
+			example = others[0] if others else 'PlayerName'
+			await self.instance.chat(
+				'$i$f00Usage: $fff/bet <login> <amount>$f00 -- e.g. $fff/bet {} 50$f00 to wager 50 planets. '
+				'Or open $fff/betmarket$f00 for a list of players and quick-bet buttons.'.format(example),
+				player
+			)
+			return
+
 		ok, message = await self.place_bet(player, data.login, data.amount)
 		color = '$ff0' if ok else '$f00'
 		await self.instance.chat('{}{}'.format(color, message), player)
 
 	async def chat_open_market(self, player, **kwargs):
 		if not self.market_is_open:
-			status = 'closed — no map/round running yet.' if not self.market_open else 'closed by an admin.'
+			if self.closed_for_reboot:
+				status = 'closed until the next map (PyPlanet just restarted).'
+			elif not self.market_open:
+				status = 'closed — no map/round running yet.'
+			else:
+				status = 'closed by an admin.'
 			await self.instance.chat(
 				'$f00Betting is {}$f00 Opening the market anyway so you can see live odds.'.format(status),
 				player

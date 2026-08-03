@@ -22,6 +22,11 @@ apps/betpluggin/
                 market_is_open: respects market_open (bool) + market_manually_closed (set by
                 //bet close, cleared by //bet open or _open_market). No auto-close timer -- a
                 market stays open for the whole map/round until an admin closes it manually.
+                On (re)start: closed_for_reboot keeps betting closed for the map already running
+                (widget shows PAUSED, not CLOSED) until the next real map/round start. Any bet still
+                PENDING/ACTIVE in the DB from before the restart is recovered in on_start via
+                _recover_bets_after_restart(): same-map bets reload into current_bets/pending_stakes
+                (resolve normally later), bets from an older map get refunded immediately.
   views.py      BetWidget (HUD), BetMarketView (ManualListView: players+odds+quick-bet),
                 BetLeaderboardView (7 cols: Player/Bets/Win%/Wagered/Net/Best/Streak).
   templates/widget.xml   Manialink widget markup.

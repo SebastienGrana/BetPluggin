@@ -33,6 +33,9 @@ class BetWidget(WidgetView):
 		if self.app.market_is_open:
 			status = 'OPEN'
 			status_color = '73FF51FF'
+		elif self.app.closed_for_reboot:
+			status = 'PAUSED'
+			status_color = 'FFB347FF'
 		elif self.app.scope == Bet.SCOPE_ROUND and self.app.current_round_number is None:
 			status = 'WAITING'
 			status_color = 'FFCC00FF'

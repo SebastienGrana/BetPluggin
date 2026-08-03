@@ -27,6 +27,9 @@ out through the server's own in-game payment system (no separate fictional curre
     the list is a single line to edit once you know how that mode should behave.
   - A market stays open for bets the whole period — it doesn't auto-close early. An admin can close it
     early with `//bet close` (e.g. to stop bets once a race is clearly decided); `//bet open` reopens it.
+  - If PyPlanet (re)starts mid-map, betting stays closed for the rest of that map (so nobody bets with
+    information others didn't have) and the HUD widget shows **PAUSED** instead of CLOSED to make that
+    reason clear. It resumes normally on the next real map/round start.
 - **Odds** are pari-mutuel: `total pot / pot on that target`. They move live as people bet and are shown
   in `/betmarket`, in the HUD widget, and locked in on your bet at the moment you place it.
 - At resolution, the server (`scores` signal) tells us who actually won. Winners are paid from the
