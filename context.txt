@@ -19,8 +19,9 @@ apps/betpluggin/
   models.py     Bet: state machine pending→active→resolved (or →declined). Tracks stake/payout
                 bill IDs. Scope: SCOPE_MAP (TimeAttack/Cup) or SCOPE_ROUND (Rounds/Teams/Knockout).
   __init__.py   Market lifecycle, SendBill/Pay plumbing, pari-mutuel odds, all commands.
-                market_is_open: respects market_open (bool) + market_open_until (timestamp) +
-                market_manually_closed (set by //bet close, cleared by //bet open or _open_market).
+                market_is_open: respects market_open (bool) + market_manually_closed (set by
+                //bet close, cleared by //bet open or _open_market). No auto-close timer -- a
+                market stays open for the whole map/round until an admin closes it manually.
   views.py      BetWidget (HUD), BetMarketView (ManualListView: players+odds+quick-bet),
                 BetLeaderboardView (7 cols: Player/Bets/Win%/Wagered/Net/Best/Streak).
   templates/widget.xml   Manialink widget markup.

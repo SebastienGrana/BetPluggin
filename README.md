@@ -19,12 +19,14 @@ out through the server's own in-game payment system (no separate fictional curre
 - A player can hold several bets at once, as long as each is on a *different* target for the current
   period (no doubling down on the same target).
 - **Market period depends on the game mode:**
-  - **TimeAttack, Cup, and anything not listed below** — one market per map, open from map start until
-    `betting_window_seconds` elapses (default 30s; 0 = open for the whole map), resolved when the map ends.
+  - **TimeAttack, Cup, and anything not listed below** — one market per map, open from map start and
+    resolved when the map ends.
   - **Rounds** (and `Teams`/`Knockout`, see `ROUND_SCOPED_MODES` in `apps/betpluggin/__init__.py`) — a
     fresh market opens at the start of *each round* and resolves at the end of that round.
   - Any other mode you run defaults to map-scoped betting until you add it to `ROUND_SCOPED_MODES` —
     the list is a single line to edit once you know how that mode should behave.
+  - A market stays open for bets the whole period — it doesn't auto-close early. An admin can close it
+    early with `//bet close` (e.g. to stop bets once a race is clearly decided); `//bet open` reopens it.
 - **Odds** are pari-mutuel: `total pot / pot on that target`. They move live as people bet and are shown
   in `/betmarket`, in the HUD widget, and locked in on your bet at the moment you place it.
 - At resolution, the server (`scores` signal) tells us who actually won. Winners are paid from the
@@ -43,7 +45,8 @@ out through the server's own in-game payment system (no separate fictional curre
 | `/mybet`, `/bets` | List your active/pending bet(s) for the current period |
 | `/wallet`, `/stats`, `/betstats` | Show your BetPluggin wagering history (your *live* Planets balance is shown in your game client, not here) |
 | `/bettop`, `/betladder` | Open the all-time leaderboard (bets, win %, wagered, net profit) |
-| `//betstop` (admin) | Close betting for the current period early |
+| `//bet close` (admin) | Close betting for the current period early |
+| `//bet open` (admin) | Force-open betting for the current period |
 
 A persistent HUD widget also shows the current market status (open/closed, pot, your own bets) with a
 button that opens `/betmarket`.
@@ -80,8 +83,8 @@ restart PyPlanet.
 
 ## Notes
 
-- `//settings` in-game lets an admin tweak `betting_window_seconds`, `quick_bet_amounts`,
-  `bet_minimum_stake` and `bet_maximum_stake` without touching code.
+- `//settings` in-game lets an admin tweak `quick_bet_amounts`, `bet_minimum_stake` and
+  `bet_maximum_stake` without touching code.
 - BetPluggin never tracks a player's Planets balance itself (there's no API to query it) — only its own
   betting history (`Bet` table), used for `/wallet` and the leaderboard. Live balance is always whatever
   your game client shows you.

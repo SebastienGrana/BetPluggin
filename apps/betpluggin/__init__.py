@@ -18,7 +18,6 @@ keeping their stakes.
 """
 import asyncio
 import math
-import time
 
 from pyplanet.apps.config import AppConfig
 from pyplanet.apps.core.maniaplanet import callbacks as mp_signals
@@ -52,11 +51,8 @@ class BetplugginApp(AppConfig):
 
 		self.scope = Bet.SCOPE_MAP
 		self.market_open = False
-		self.market_open_until = None
 		self.market_manually_closed = False
 		self.current_round_number = None
-		self._market_generation = 0
-		self._close_timer_task = None
 
 		# Confirmed bets in the market period currently open, not yet resolved.
 		# Each entry: dict(bet=Bet instance, player=Player instance, target_login=str, amount=int)
@@ -76,13 +72,6 @@ class BetplugginApp(AppConfig):
 		self.last_scores = None
 
 		self.widget = None
-
-		self.setting_betting_window = Setting(
-			'betting_window_seconds', 'Betting window (seconds)', Setting.CAT_BEHAVIOUR, type=int,
-			description='Seconds after a market opens (map start, or round start in round-based modes) '
-						'during which bets can be placed. 0 = open for the whole period.',
-			default=30
-		)
 
 		self.setting_quick_bet_amounts = Setting(
 			'quick_bet_amounts', 'Quick-bet amounts', Setting.CAT_BEHAVIOUR, type=str,
@@ -157,7 +146,7 @@ class BetplugginApp(AppConfig):
 		)
 
 		await self.context.setting.register(
-			self.setting_betting_window, self.setting_quick_bet_amounts,
+			self.setting_quick_bet_amounts,
 			self.setting_min_stake, self.setting_max_stake,
 		)
 
@@ -187,8 +176,6 @@ class BetplugginApp(AppConfig):
 			return False
 		if not self.market_open:
 			return False
-		if self.market_open_until is not None and time.time() > self.market_open_until:
-			return False
 		return True
 
 	async def detect_scope(self):
@@ -215,7 +202,6 @@ class BetplugginApp(AppConfig):
 				# Round-scoped (wait for the first `round_start` to open the market), or we're resuming
 				# mid-map after a (re)start -- either way, betting stays closed until the next real start.
 				self.market_open = False
-				self.market_open_until = None
 
 		if self.widget:
 			await self.widget.display()
@@ -234,31 +220,8 @@ class BetplugginApp(AppConfig):
 
 	async def _open_market(self):
 		"""Must be called while holding self.lock."""
-		window = await self.setting_betting_window.get_value()
 		self.market_manually_closed = False
 		self.market_open = True
-		self.market_open_until = (time.time() + window) if window and window > 0 else None
-
-		# The widget only re-renders on specific events (map/round start, a confirmed bet, ...) -- without
-		# this, once the betting window naturally elapses mid-map, the HUD keeps showing OPEN until the
-		# next such event. Schedule a one-shot refresh right when the window is due to close instead.
-		self._market_generation += 1
-		generation = self._market_generation
-		if self._close_timer_task:
-			self._close_timer_task.cancel()
-			self._close_timer_task = None
-		if window and window > 0:
-			self._close_timer_task = asyncio.ensure_future(self._auto_close_refresh(window, generation))
-
-	async def _auto_close_refresh(self, delay, generation):
-		try:
-			await asyncio.sleep(delay)
-		except asyncio.CancelledError:
-			return
-		if generation != self._market_generation:
-			return
-		if self.widget:
-			await self.widget.display()
 
 	async def on_scores(self, players, winner_player, **kwargs):
 		# Fired around every podium (each round in round-based modes, and around map end otherwise).
@@ -284,7 +247,6 @@ class BetplugginApp(AppConfig):
 			bets = self.current_bets
 			self.current_bets = []
 			self.market_open = False
-			self.market_open_until = None
 			last_scores = self.last_scores
 			self.last_scores = None
 
@@ -678,7 +640,7 @@ class BetplugginApp(AppConfig):
 
 	async def chat_open_market(self, player, **kwargs):
 		if not self.market_is_open:
-			status = 'closed — no map/round running yet.' if not self.market_open else 'closed (betting window has ended).'
+			status = 'closed — no map/round running yet.' if not self.market_open else 'closed by an admin.'
 			await self.instance.chat(
 				'$f00Betting is {}$f00 Opening the market anyway so you can see live odds.'.format(status),
 				player
