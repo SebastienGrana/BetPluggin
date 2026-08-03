@@ -9,8 +9,10 @@ from .models import Bet
 
 
 class BetWidget(WidgetView):
-	widget_x = -110
-	widget_y = 70
+	# Docked right below the "Best CPs" widget (x=-124.5, y=90, 35x6), in the same column, so it sits
+	# flush beside the left-hand PyPlanet column (server info / ladder range / version, then Dedimania).
+	widget_x = -124.5
+	widget_y = 83.5
 	z_index = 130
 	size_x = 40
 	size_y = 11.5
