@@ -1,0 +1,88 @@
+services:
+  betpluggin:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - .:/project
+      # PyPlanet's LocalDriver storage assumes it shares a filesystem with the dedicated server (it
+      # writes to the exact absolute path the server reports for itself, e.g. for mx/dedimania map
+      # downloads) -- same host folder, same path as tm-dedicated below, or those plugins fail with
+      # "Can't check or create folder".
+      #
+      # Bind-mounted to a host folder (not a named volume) as of 2026-08-03: the OnZ Bot's mapupload
+      # feature (a separate Java project, see its docker/tm-dedicated-userdata sibling comment below)
+      # needs to write map files here directly from the host, bypassing XML-RPC's WriteFile -- which
+      # is broken on this dedicated server build, see OnZ Bot's mapupload/context.txt. A named volume
+      # isn't reachable from a plain host process; a bind mount is.
+      - ./docker/tm-dedicated-userdata:/app/dedicated/UserData
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      tm-dedicated:
+        condition: service_started
+        required: false
+
+  # PyPlanet needs a real (async-capable) database -- peewee_async only supports MySQL/PostgreSQL,
+  # not SQLite. MariaDB speaks the MySQL protocol (works with PyPlanet's old pinned mysql drivers)
+  # without mysql:5.7's broken entrypoint script or MySQL 8's incompatible default auth plugin.
+  # Internal-only, never exposed to the host, so plain default credentials are fine.
+  db:
+    image: mariadb:10.6
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: pyplanet
+      MYSQL_USER: pyplanet
+      MYSQL_PASSWORD: pyplanet
+      MYSQL_ROOT_PASSWORD: pyplanet
+    command: mariadbd --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Local dev-only Trackmania2 Stadium (ManiaPlanet) dedicated server, so we can build/test BetPluggin
+  # without touching the real ManiaServ-hosted server. Only starts with `docker compose --profile dev up`.
+  # Official image maintained by the PyPlanet team: https://github.com/PyPlanet/maniaplanet-docker
+  # Requires a free dedicated server login: https://maniaplanet.com/account/dedicated-servers
+  #
+  # Uses non-default ports (2360/3460/5010, via docker/tm-dedicated-config.txt): the ManiaPlanet *game
+  # client* itself holds 2350 and 127.0.0.1:5000 while running, so a server on the default ports
+  # collides with it and joins silently resolve to the client instead ("Pas un serveur"). Not a Docker
+  # networking issue -- TCP and UDP forwarding were verified working end-to-end.
+  tm-dedicated:
+    image: pyplanet/maniaplanet-dedicated
+    profiles: ["dev"]
+    env_file:
+      - .env
+    environment:
+      LOGIN: "${TM_DEDICATED_LOGIN}"
+      PASSWORD: "${TM_DEDICATED_PASSWORD}"
+      TITLE: "TMStadium@nadeo"
+      SERVER_NAME: "VELPdevSERV"
+      # Passed to /forceip; must agree with docker/tm-dedicated-config.txt's <server_port>.
+      PORT: "2360"
+      # Without this the entrypoint auto-detects your public/WAN IP and registers *that* with the
+      # master server, unreachable from this same machine without router port-forwarding. Use your
+      # LAN IP instead (set TM_DEDICATED_FORCE_IP in .env, find it with `ipconfig`).
+      FORCE_IP_ADDRESS: "${TM_DEDICATED_FORCE_IP:-127.0.0.1}"
+    ports:
+      - "2360:2360/tcp"
+      - "2360:2360/udp"
+      - "3460:3460/tcp"
+      - "3460:3460/udp"
+      - "5010:5010/tcp"
+    volumes:
+      # See betpluggin service's matching volume comment above -- bind-mounted to the same host
+      # folder (./docker/tm-dedicated-userdata, gitignored) so a plain host process (the OnZ Bot's
+      # mapupload feature) can write map files here directly too.
+      - ./docker/tm-dedicated-userdata:/app/dedicated/UserData
+      - ./docker/tm-dedicated-config.txt:/app/dedicated/UserData/Config/config.txt:ro
+    restart: unless-stopped
+
+volumes:
+  db-data:

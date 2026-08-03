@@ -1,0 +1,91 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>BetPluggin Leaderboard Mockup</title>
+  <style>
+    body { font-family: monospace; background: #0a0e17; color: #f2f2f0; padding: 20px; }
+    .mockup { background: #14181f; border: 1px solid #2c2c2a; padding: 12px; max-width: 600px; margin: 20px 0; }
+    .header { display: flex; justify-content: space-between; padding: 8px 10px; background: #1d1f26; font-size: 11px; color: #6b6f68; border-bottom: 1px solid #2c2c2a; }
+    .search { border: 0.5px solid #3a3d33; padding: 2px 8px; }
+    .row-header { display: grid; grid-template-columns: 1.8fr 0.6fr 0.7fr 0.8fr 0.8fr 0.8fr 0.6fr; gap: 8px; padding: 8px 10px; font-size: 11px; color: #6b6f68; border-bottom: 1px solid #2c2c2a; text-align: right; }
+    .row-header span:first-child { text-align: left; }
+    .row { display: grid; grid-template-columns: 1.8fr 0.6fr 0.7fr 0.8fr 0.8fr 0.8fr 0.6fr; gap: 8px; padding: 8px 10px; font-size: 12px; border-bottom: 1px solid #1d1f26; text-align: right; }
+    .row:last-child { border-bottom: none; }
+    .row span:first-child { text-align: left; color: #f2f2f0; }
+    .muted { color: #a8ada8; }
+    .profit { color: #73ff51; }
+    .loss { color: #e24b4a; }
+    .neutral { color: #f2f2f0; }
+    h2 { font-size: 14px; color: #73ff51; margin-top: 30px; }
+  </style>
+</head>
+<body>
+  <h1>BetPluggin Leaderboard UI</h1>
+
+  <h2>Compact Layout (Right-aligned numbers)</h2>
+  <div class="mockup">
+    <div class="header">
+      <span>BetPluggin — leaderboard</span>
+      <span class="search">search…</span>
+    </div>
+    <div class="row-header">
+      <span>Player</span>
+      <span>Bets</span>
+      <span>Win %</span>
+      <span>Wagered</span>
+      <span>Net</span>
+      <span>Best</span>
+      <span>Streak</span>
+    </div>
+    <div class="row">
+      <span>velp</span>
+      <span class="muted">18</span>
+      <span class="muted">61%</span>
+      <span class="muted">1240</span>
+      <span class="profit">+380</span>
+      <span class="muted">210</span>
+      <span class="profit">W3</span>
+    </div>
+    <div class="row">
+      <span>RachoVolker</span>
+      <span class="muted">9</span>
+      <span class="muted">44%</span>
+      <span class="muted">860</span>
+      <span class="profit">+55</span>
+      <span class="muted">120</span>
+      <span class="neutral">-</span>
+    </div>
+    <div class="row">
+      <span>TechNicker</span>
+      <span class="muted">14</span>
+      <span class="muted">22%</span>
+      <span class="muted">610</span>
+      <span class="loss">-140</span>
+      <span class="muted">95</span>
+      <span class="loss">L2</span>
+    </div>
+  </div>
+
+  <h2>Ultra-compact (condensed columns)</h2>
+  <div class="mockup">
+    <div class="header">
+      <span>BetPluggin — leaderboard</span>
+      <span class="search">search…</span>
+    </div>
+    <div style="display: grid; grid-template-columns: 2fr 0.5fr 0.5fr 0.6fr 0.6fr 0.6fr 0.4fr; gap: 6px; padding: 6px 8px; font-size: 10px; color: #6b6f68; border-bottom: 1px solid #2c2c2a; text-align: right;">
+      <span style="text-align: left;">P</span><span>B</span><span>W%</span><span>Wgd</span><span>Net</span><span>Bst</span><span>Sr</span>
+    </div>
+    <div style="display: grid; grid-template-columns: 2fr 0.5fr 0.5fr 0.6fr 0.6fr 0.6fr 0.4fr; gap: 6px; padding: 6px 8px; font-size: 11px; border-bottom: 1px solid #1d1f26; text-align: right;">
+      <span style="text-align: left; color: #f2f2f0;">velp</span><span class="muted">18</span><span class="muted">61%</span><span class="muted">1240</span><span class="profit">+380</span><span class="muted">210</span><span class="profit">W3</span>
+    </div>
+    <div style="display: grid; grid-template-columns: 2fr 0.5fr 0.5fr 0.6fr 0.6fr 0.6fr 0.4fr; gap: 6px; padding: 6px 8px; font-size: 11px; border-bottom: 1px solid #1d1f26; text-align: right;">
+      <span style="text-align: left; color: #f2f2f0;">RachoVolker</span><span class="muted">9</span><span class="muted">44%</span><span class="muted">860</span><span class="profit">+55</span><span class="muted">120</span><span class="neutral">-</span>
+    </div>
+    <div style="display: grid; grid-template-columns: 2fr 0.5fr 0.5fr 0.6fr 0.6fr 0.6fr 0.4fr; gap: 6px; padding: 6px 8px; font-size: 11px; text-align: right;">
+      <span style="text-align: left; color: #f2f2f0;">TechNicker</span><span class="muted">14</span><span class="muted">22%</span><span class="muted">610</span><span class="loss">-140</span><span class="muted">95</span><span class="loss">L2</span>
+    </div>
+  </div>
+
+</body>
+</html>

@@ -1,0 +1,41 @@
+BetPluggin - task list
+========================
+(What's done, what's left. See context.txt for architecture/gotchas.)
+
+DONE
+-----
+- Bet model: state machine pending→active→resolved/declined, map+round scoping
+- Pari-mutuel odds, SendBill/Pay/refund plumbing (never tested live yet — see below)
+- Commands: /bet /betmarket /mybet /wallet /bettop /help bet
+  + //bet open  //bet close  //bet help
+  All public commands give explicit success/failure feedback in chat.
+- Admin market control: //bet open (force-open, clears manual close flag),
+  //bet close (sets market_manually_closed, survives the timeout window)
+- Leaderboard: 7 cols — Player/Bets/Win%/Wagered/Net/Best win/Streak
+  Refunded bets excluded from stats. format_streak() → W3/L2/-
+- HUD widget + BetMarketView (quick-bet) + BetLeaderboardView
+- Fully Dockerized dev env. mx + dedimania plugins loaded.
+  Server: velp_devserv, ports 2360/3460/5010, 5000 planets loaded on dev server.
+- .claudeignore in place (excludes __pycache__, .env, README, migrations, etc.)
+- context.txt compacted to ~46 lines
+
+NEEDS LIVE TESTING (priority)
+--------------------------------
+1. Place a bet → confirm SendBill popup in client [needs real validated server, see BLOCKED]
+2. /mybet shows confirmed (not pending)
+3. Map ends → payout received by winner, loss message for others
+4. No-winner case → everyone refunded
+5. Too-late confirmation → refunded
+6. /bettop with real resolved data
+7. //bet open / //bet close work as expected in game
+
+  Local dev server can't pass Nadeo's billing validation (SendBill/Pay always fail -- see README).
+  Set BETPLUGGIN_FAKE_PAYMENTS=true in .env to bypass real payments and test #2-7 solo (bets
+  confirm/resolve instantly, chat messages tagged "(fake payment mode)"). Only #1 (the real popup
+  itself) still needs a validated server.
+
+BLOCKED (need the user)
+-------------------------
+- Dedimania code: dedimania.net/tm2stats/?do=register → register velpDevServ → //settings in-game
+- Real server deploy: contact ManiaServ support once plugin is finished and tested
+- Real SendBill popup + payment flow: can only be verified against a validated dedicated server

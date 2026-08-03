@@ -1,0 +1,2 @@
+# Core, requires PyPlanet itself. Pinned to the version this project was built/tested against.
+pyplanet==0.11.12

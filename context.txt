@@ -1,0 +1,57 @@
+BetPluggin - project context
+==============================
+(Stable background. Task list in TODO.txt. Mockups in mockups_leaderboard.html.)
+
+WHAT IT IS: PyPlanet plugin for TM2 Stadium (ManiaPlanet). Players wager real ManiaPlanet Planets
+on who wins the current map/round via SendBill (player→server) / Pay (server→player). No fake currency.
+
+COMMANDS
+---------
+Public:  /bet <login> <amount>  /betmarket (/market /odds)  /mybet (/bets)  /wallet (/stats)
+         /bettop (/betladder)  /help bet
+Admin:   //bet open  //bet close  //bet help
+
+All public commands give explicit success/failure feedback in chat with reason.
+
+ARCHITECTURE
+-------------
+apps/betpluggin/
+  models.py     Bet: state machine pending→active→resolved (or →declined). Tracks stake/payout
+                bill IDs. Scope: SCOPE_MAP (TimeAttack/Cup) or SCOPE_ROUND (Rounds/Teams/Knockout).
+  __init__.py   Market lifecycle, SendBill/Pay plumbing, pari-mutuel odds, all commands.
+                market_is_open: respects market_open (bool) + market_open_until (timestamp) +
+                market_manually_closed (set by //bet close, cleared by //bet open or _open_market).
+  views.py      BetWidget (HUD), BetMarketView (ManualListView: players+odds+quick-bet),
+                BetLeaderboardView (7 cols: Player/Bets/Win%/Wagered/Net/Best/Streak).
+  templates/widget.xml   Manialink widget markup.
+
+Stats computed by get_leaderboard(): bets, wins, wagered, won, net, best_win, streak.
+Refunded bets (won=None) excluded from stats. format_streak() → "W3", "L2", "-".
+
+DEV ENVIRONMENT
+----------------
+docker compose --profile dev up --build
+Containers: betpluggin (PyPlanet), db (MariaDB 10.6), tm-dedicated (pyplanet/maniaplanet-dedicated).
+Server name: velp_devserv (docker/tm-dedicated-config.txt + docker-compose.yml SERVER_NAME).
+Non-default ports 2360/3460/5010: game client holds 2350 and 127.0.0.1:5000 while running.
+betpluggin container mounts tm-dedicated-userdata at /app/dedicated/UserData (same volume, same path)
+so PyPlanet's LocalDriver can write map downloads (mx/dedimania) to the right place.
+In-game join: #join=<TM_DEDICATED_LOGIN>@TMStadium@nadeo, then /claim <code> from logs.
+
+ALSO LOADED (settings/apps.py, not BetPluggin code):
+  mx        – ManiaExchange downloads. //add mx <id> / //mx add <id> / //mxpack add <id>.
+  dedimania – loaded, needs per-server code: dedimania.net/tm2stats/?do=register → //settings.
+
+KEY GOTCHAS
+------------
+- SERVER's Planets balance (GetServerPlanets) is the bank. 5000 planets added to dev server for testing.
+- SendBill needs the player to confirm a popup — bet is pending until bill_updated fires (state 4).
+- No player-to-player Planets API exists (only player→server and server→player).
+- Python 3.8 only: peewee_async needs asyncio.Task.current_task (removed 3.9+). MariaDB required
+  (peewee_async has no async SQLite support).
+- Real server: hosted on ManiaServ, fully managed PyPlanet, no FTP/RPC access. Deploy via support.
+
+UI
+---
+mockups_leaderboard.html – approved leaderboard design: 7 right-aligned columns, dark theme,
+green=wins/profit, red=losses. Reference for Manialink implementation.

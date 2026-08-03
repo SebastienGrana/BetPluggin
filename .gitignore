@@ -1,0 +1,13 @@
+.env
+database.db
+pyplanet.pid
+tmp/
+logs/
+__pycache__/
+*.pyc
+.venv/
+docker/tm-dedicated-userdata/
+
+# Personal/tooling notes, not part of the plugin itself
+.claudeignore
+localTMserv.txt
