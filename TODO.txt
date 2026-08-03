@@ -29,10 +29,8 @@ NEEDS LIVE TESTING (priority)
 6. /bettop with real resolved data
 7. //bet open / //bet close work as expected in game
 
-  Local dev server can't pass Nadeo's billing validation (SendBill/Pay always fail -- see README).
-  Set BETPLUGGIN_FAKE_PAYMENTS=true in .env to bypass real payments and test #2-7 solo (bets
-  confirm/resolve instantly, chat messages tagged "(fake payment mode)"). Only #1 (the real popup
-  itself) still needs a validated server.
+  Local dev server can't pass Nadeo's billing validation (SendBill/Pay always fail -- see README) --
+  all of #1-7 need a validated server to actually verify.
 
 BLOCKED (need the user)
 -------------------------

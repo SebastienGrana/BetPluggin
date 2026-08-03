@@ -18,7 +18,6 @@ keeping their stakes.
 """
 import asyncio
 import math
-import os
 import time
 
 from pyplanet.apps.config import AppConfig
@@ -58,10 +57,6 @@ class BetplugginApp(AppConfig):
 		self.current_round_number = None
 		self._market_generation = 0
 		self._close_timer_task = None
-
-		# DEV ONLY: bypasses SendBill/Pay entirely so bets confirm and resolve instantly without a real,
-		# validated dedicated server. Never enable on a real/live deployment -- it hands out fake wins.
-		self.fake_payments = os.environ.get('BETPLUGGIN_FAKE_PAYMENTS', 'false').strip().lower() in ('1', 'true', 'yes')
 
 		# Confirmed bets in the market period currently open, not yet resolved.
 		# Each entry: dict(bet=Bet instance, player=Player instance, target_login=str, amount=int)
@@ -175,12 +170,6 @@ class BetplugginApp(AppConfig):
 		self.context.signals.listen(tm_scores_signal, self.on_scores)
 
 		self.widget = BetWidget(self)
-
-		if self.fake_payments:
-			await self.instance.chat(
-				'$f00$i[BetPluggin] FAKE PAYMENTS MODE is enabled -- bets confirm/pay out instantly, no '
-				'real planets move. Never run this on a live server.'
-			)
 
 		# Handle the map that might already be running when the app (re)starts. We can't know how much
 		# of it has already played out, so don't reopen a fresh betting window for it -- that would let
@@ -397,13 +386,6 @@ class BetplugginApp(AppConfig):
 		remaining server balance so callers resolving several payouts in a row don't have to re-fetch it
 		every time.
 		"""
-		if self.fake_payments:
-			await self._safe_chat(
-				'$ff0You received $fff{}$ff0 planets from BetPluggin! $aaa(fake payment mode)'.format(amount),
-				player
-			)
-			return server_planets
-
 		# Pay deducts a small fee on top of the nominal amount -- mirrors the reserve check used by
 		# other PyPlanet apps that pay out planets (e.g. the official `transactions` app).
 		reserve = 2 + math.floor(amount * 0.05)
@@ -428,11 +410,6 @@ class BetplugginApp(AppConfig):
 
 	async def _refund(self, player, amount, reason):
 		if amount <= 0:
-			return
-		if self.fake_payments:
-			await self._safe_chat(
-				'$ff0{} Refunding your {} planets. $aaa(fake payment mode)'.format(reason, amount), player
-			)
 			return
 		try:
 			bill_id = await self.instance.gbx('Pay', player.login, amount, 'BetPluggin refund: {}'.format(reason))
@@ -614,36 +591,21 @@ class BetplugginApp(AppConfig):
 				state=Bet.STATE_PENDING,
 			)
 
-			if self.fake_payments:
-				bet.state = Bet.STATE_ACTIVE
-				await bet.save()
-				self.current_bets.append(dict(
-					bet=bet, player=bettor, target_login=target.login, amount=amount, odds=odds,
-					round_number=self.current_round_number,
-				))
-			else:
-				try:
-					bill_id = await self.instance.gbx(
-						'SendBill', bettor.login, amount,
-						'BetPluggin: betting {} planets on {} to win!'.format(amount, target.login), ''
-					)
-				except Exception as e:
-					await bet.destroy()
-					return False, 'Could not start the payment ({}). Try again.'.format(e)
-
-				bet.stake_bill_id = bill_id
-				await bet.save()
-
-				self.pending_stakes[bill_id] = dict(
-					bet=bet, player=bettor, target_login=target.login, amount=amount, odds=odds,
-					round_number=self.current_round_number,
+			try:
+				bill_id = await self.instance.gbx(
+					'SendBill', bettor.login, amount,
+					'BetPluggin: betting {} planets on {} to win!'.format(amount, target.login), ''
 				)
+			except Exception as e:
+				await bet.destroy()
+				return False, 'Could not start the payment ({}). Try again.'.format(e)
 
-		if self.fake_payments:
-			if self.widget:
-				await self.widget.display()
-			return True, 'Bet confirmed: {} planets on {} (odds x{}). $aaa(fake payment mode)'.format(
-				amount, target.nickname or target.login, self.format_odds(odds)
+			bet.stake_bill_id = bill_id
+			await bet.save()
+
+			self.pending_stakes[bill_id] = dict(
+				bet=bet, player=bettor, target_login=target.login, amount=amount, odds=odds,
+				round_number=self.current_round_number,
 			)
 
 		return True, 'Confirm the payment popup in your game client to lock in {} planets on {} (odds x{}).'.format(

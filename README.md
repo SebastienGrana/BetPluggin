@@ -134,12 +134,6 @@ odds display, DB writes) can be fully tested locally; the payment confirmation p
 anything downstream of it (`bill_updated`, payouts) can only be verified against a real, validated
 dedicated server (e.g. the target ManiaServ deployment).
 
-**Workaround for solo/local testing:** set `BETPLUGGIN_FAKE_PAYMENTS=true` in `.env` (see
-`.env.example`). This bypasses `SendBill`/`Pay` entirely -- bets confirm and resolve instantly, with
-every fake message clearly tagged `(fake payment mode)` in chat -- so you can play through the full
-bet → resolve → payout → leaderboard cycle by yourself without a validated server. **Never enable this
-on a real/live deployment**, it hands out free wins.
-
 ### ⚠️ Port conflict with the game client (this one costs hours)
 
 **The ManiaPlanet game client itself listens on 2350 and 127.0.0.1:5000 while it is running.** Those are
