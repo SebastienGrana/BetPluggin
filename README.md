@@ -48,6 +48,7 @@ out through the server's own in-game payment system (no separate fictional curre
 | `/mybet`, `/bets` | List your active/pending bet(s) for the current period |
 | `/wallet`, `/stats`, `/betstats` | Show your BetPluggin wagering history (your *live* Planets balance is shown in your game client, not here) |
 | `/bettop`, `/betladder` | Open the all-time leaderboard (bets, win %, wagered, net profit) |
+| `/bettargets`, `/targets`, `/cotes` | Open the "who's worth betting on" board (past wins, usual multiplier, badges per player) |
 | `//bet close` (admin) | Close betting for the current period early |
 | `//bet open` (admin) | Force-open betting for the current period |
 
@@ -66,8 +67,8 @@ settings/
 apps/betpluggin/
   __init__.py          the plugin: mode detection, market lifecycle, SendBill/Pay plumbing, odds, commands
   models.py            Bet table (a wager, scoped to a map or a round, tracks its own payment state)
-  views.py              in-game UI: BetWidget (HUD), BetMarketView, BetLeaderboardView
-  templates/widget.xml  manialink markup for the HUD widget
+  views.py              in-game UI: BetWidget (HUD), BetMarketView, BetLeaderboardView, BetTargetsView, BetResultView
+  templates/            manialink markup: widget.xml (HUD), list.xml (leaderboard/targets tables), result.xml (payout popup)
 .env.example           copy to .env and fill in your real server details (gitignored)
 ```
 
