@@ -57,31 +57,74 @@ services:
   tm-dedicated:
     image: pyplanet/maniaplanet-dedicated
     profiles: ["dev"]
+    # Quote the /servername argument before handing over to the image's own entrypoint. Upstream's
+    # start.sh writes `/servername=${SERVER_NAME} \`, unquoted, so a name with spaces is split by the
+    # shell into extra positional arguments and only the first word reaches the server. Patching the
+    # line in place (rather than shipping a full copy of start.sh) keeps us on whatever the image
+    # ships; if upstream ever fixes or reformats that line the sed simply matches nothing and the
+    # container still boots. `$$` escapes compose's own variable interpolation, so sed sees the
+    # literal `${SERVER_NAME}` text in the script.
+    command: ["sh", "-c", "sed -i 's|/servername=$${SERVER_NAME}|/servername=\"$${SERVER_NAME}\"|' start.sh && exec ./start.sh"]
     env_file:
       - .env
     environment:
       LOGIN: "${TM_DEDICATED_LOGIN}"
       PASSWORD: "${TM_DEDICATED_PASSWORD}"
       TITLE: "TMStadium@nadeo"
-      SERVER_NAME: "VELPdevSERV"
+      # Spaces here need the `command:` patch further down -- the image's start.sh interpolates
+      # SERVER_NAME unquoted, so anything after the first space becomes a separate argument and the
+      # name silently truncates ("VelpDev - Come test..." showed up as just "VelpDev").
+      SERVER_NAME: "VelpDev - Come test the BetPugin !"
+      # Boot on maplist.txt, the playlist PyPlanet actually maintains (//add writes there, and it's
+      # bind-mounted below so it survives container recreation). Without this the image's start.sh
+      # falls back to `: ${MATCH_SETTINGS:="MatchSettings/default.txt"}` -- the template it generates
+      # on first run, which holds a single map. That made every restart look like the playlist had
+      # been wiped, when in fact the maps were saved all along and simply never loaded.
+      MATCH_SETTINGS: "MatchSettings/maplist.txt"
       # Passed to /forceip; must agree with docker/tm-dedicated-config.txt's <server_port>.
       PORT: "2360"
-      # Without this the entrypoint auto-detects your public/WAN IP and registers *that* with the
-      # master server, unreachable from this same machine without router port-forwarding. Use your
-      # LAN IP instead (set TM_DEDICATED_FORCE_IP in .env, find it with `ipconfig`).
-      FORCE_IP_ADDRESS: "${TM_DEDICATED_FORCE_IP:-127.0.0.1}"
+      # 2026-08-15: this dev server was opened to the internet so several real testers can join and
+      # reproduce a multi-player BetPluggin bug that can't be triggered solo. Leaving FORCE_IP_ADDRESS
+      # unset makes the entrypoint auto-detect the public/WAN IP and register *that* with the master
+      # server -- which is what we now want, and it survives the ISP handing out a new dynamic IP
+      # (re-detected on every container start) instead of hardcoding one that silently goes stale.
+      #
+      # Requires the router to forward 2360 and 3460 (TCP *and* UDP) to this machine. Do NOT forward
+      # 5010 -- see the ports section below.
+      #
+      # Trade-off: joining from this same LAN now depends on the router supporting NAT hairpinning
+      # (the master server hands out the public IP even to a client sitting behind that same router).
+      # If the local game client can no longer join, that's why.
+      #
+      # To go back to LAN-only dev, uncomment the line below (set TM_DEDICATED_FORCE_IP in .env to the
+      # LAN IPv4 from `ipconfig`) and close the router ports again.
+      # FORCE_IP_ADDRESS: "${TM_DEDICATED_FORCE_IP:-127.0.0.1}"
     ports:
       - "2360:2360/tcp"
       - "2360:2360/udp"
       - "3460:3460/tcp"
       - "3460:3460/udp"
-      - "5010:5010/tcp"
+      # XML-RPC. Bound to loopback only (2026-08-15, when this server was opened to the internet):
+      # it authenticates with SuperAdmin/SuperAdmin in cleartext and grants full control of the
+      # dedicated server, so it must never be reachable from the LAN, let alone forwarded by the
+      # router. PyPlanet doesn't use this mapping anyway -- it reaches the server as tm-dedicated:5010
+      # over the compose network. The mapping only exists for host-side tools (the OnZ Bot's mapupload
+      # feature), which run on this machine and so are fine on 127.0.0.1.
+      - "127.0.0.1:5010:5010/tcp"
     volumes:
       # See betpluggin service's matching volume comment above -- bind-mounted to the same host
       # folder (./docker/tm-dedicated-userdata, gitignored) so a plain host process (the OnZ Bot's
       # mapupload feature) can write map files here directly too.
       - ./docker/tm-dedicated-userdata:/app/dedicated/UserData
       - ./docker/tm-dedicated-config.txt:/app/dedicated/UserData/Config/config.txt:ro
+      # NOTE (2026-08-15): maplist.txt used to be bind-mounted individually here, on the theory that
+      # the entrypoint would otherwise wipe the playlist. It doesn't -- start.sh only ever creates
+      # MatchSettings/default.txt, and only when that file is missing; maplist.txt is never touched.
+      # The mount was redundant (UserData above is already a bind mount, so the file persists through
+      # its parent) and it actively broke saving: the server writes a temp file and renames it over
+      # maplist.txt, but a single-file bind mount pins that path, so the rename failed and left
+      # orphans behind (Gbx9JaZF1, GbxBPCax0, GbxNt7Ju2, GbxUuGqz7 -- every playlist save since
+      # 2026-08-03 was silently lost). Keep MatchSettings persisted via the UserData mount only.
     restart: unless-stopped
 
 volumes:

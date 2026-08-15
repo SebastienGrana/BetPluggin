@@ -1,0 +1,37 @@
+<!--
+  Transient per-player result card, shown only to players who actually had a bet on the period that
+  just resolved. Deliberately narrow and parked in the left column just under the bet widget (whose
+  bottom edge sits at y=68 -- move this if the widget ever changes height again): the podium
+  scoreboard owns the centre of the screen, so anything wider or more central would sit on top of the
+  thing players are trying to read.
+
+  No `distraction-hide` class here on purpose -- this card is *meant* to show during the podium, which
+  is exactly when the game hides distraction widgets.
+
+  The <manialink> wrapper is added by PyPlanet's UI manager; templates only provide the body.
+-->
+<frame pos="-124.5 66.5" z-index="140">
+  <quad pos="0 0" z-index="0" size="40 20" bgcolor="0F0F1AF0"/>
+  <quad pos="0 0" z-index="1" size="40 0.6" bgcolor="{{ accent }}"/>
+
+  <label pos="1.4 -2.8" z-index="2" size="30 2.6" textsize="1.2" valign="center" textcolor="{{ accent }}"
+         text="{{ headline }}"/>
+
+  <!-- Close button. The card also hides itself after a few seconds, but a player who wants their view
+       back immediately shouldn't have to wait for it. -->
+  <quad pos="35.2 -1.4" z-index="2" size="3.4 3.4" bgcolor="FFFFFF22" action="{{ id }}__close"/>
+  <label pos="36.9 -3.1" z-index="3" size="3.4 3.4" textsize="1" halign="center" valign="center"
+         textcolor="FFFFFFCC" text="X" action="{{ id }}__close"/>
+
+  <label pos="1.4 -6.4" z-index="2" size="37.2 2.6" textsize="1" valign="center" textcolor="CCCCCCFF"
+         text="{{ winner_line }}"/>
+
+  <quad pos="1.4 -8.6" z-index="2" size="37.2 0.2" bgcolor="FFFFFF22"/>
+
+  <label pos="1.4 -10.8" z-index="2" size="37.2 2.6" textsize="1" valign="center" textcolor="AAAAAAFF"
+         text="{{ stake_line }}"/>
+  <label pos="1.4 -14.2" z-index="2" size="37.2 3" textsize="1.6" valign="center" textcolor="{{ accent }}"
+         text="{{ result_line }}"/>
+  <label pos="1.4 -17.6" z-index="2" size="37.2 2.6" textsize="0.9" valign="center" textcolor="888888FF"
+         text="{{ footer_line }}"/>
+</frame>

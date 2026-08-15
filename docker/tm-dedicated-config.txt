@@ -24,15 +24,24 @@
     <masterserver_account>
         <login></login>
         <password></password>
+        <!-- Filled in locally only, never committed: this repo is public. Grab the value from
+             https://maniaplanet.com/account/dedicated-servers and paste it here. Leaving it empty in
+             git means a fresh clone must set it before the server can register. -->
         <validation_key></validation_key>
     </masterserver_account>
 
     <server_options>
-        <name>VELPdevSERV</name>
+        <name>VelpDev - Come test the BetPugin !</name>
         <comment></comment>
         <hide_server>0</hide_server>					<!-- value is 0 (always shown), 1 (always hidden), 2 (hidden from nations) -->
 
         <max_players>32</max_players>
+        <!-- Deliberately open: the server is public (hide_server=0) and takes no join password, on the
+             user's explicit call (2026-08-15), so testers can walk in without being handed anything.
+             Be aware of what that means before changing anything nearby: the server's own Planets
+             balance is BetPluggin's betting bank (~5000 real Planets) and the plugin is knowingly
+             buggy, so anyone who joins can place real-money bets against broken code. Setting a
+             password here again (and restarting tm-dedicated) is the way to close it. -->
         <password></password>
 
         <max_spectators>32</max_spectators>
