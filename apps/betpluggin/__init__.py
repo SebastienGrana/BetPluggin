@@ -1395,8 +1395,25 @@ class BetplugginApp(AppConfig):
 				entry['wins'] += 1
 
 		targets = list(stats.values())
+
+		# display_name() only knows about players currently online, and this board spans the whole
+		# server history -- most targets have long since disconnected, which was showing their raw
+		# login instead of their (coloured) nickname. Batch-fetch the persisted nickname for whoever
+		# isn't online right now so the table still reads like a nickname list.
+		offline_logins = [e['login'] for e in targets if not self.get_online_player(e['login'])]
+		last_known = {}
+		if offline_logins:
+			known_players = await Player.execute(
+				Player.select(Player.login, Player.nickname).where(Player.login.in_(offline_logins))
+			)
+			last_known = {p.login.lower(): p.nickname for p in known_players}
+
 		for entry in targets:
-			entry['nickname'] = self.display_name(entry['login'])
+			entry['nickname'] = (
+				self.display_name(entry['login'])
+				if self.get_online_player(entry['login'])
+				else last_known.get(entry['login'].lower(), entry['login'])
+			)
 			entry['win_rate'] = round((entry['wins'] / entry['backed']) * 100, 1) if entry['backed'] else 0
 			entry['avg_odds'] = round(entry['odds_sum'] / entry['odds_count'], 2) if entry['odds_count'] else None
 			# What backing this player has been worth overall. Negative means the crowd lost money on them.
