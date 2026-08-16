@@ -6,8 +6,13 @@
   <quad pos="1.2 -1.2" z-index="1" size="8 2.6" bgcolor="{{ status_color }}"/>
   <label pos="5.2 -2.3" z-index="2" size="8 2.6" textsize="1" halign="center" valign="center" textcolor="000000FF" text="{{ status }}"/>
 
-  <label pos="10.2 -2.4" z-index="1" size="28.8 2.6" textsize="1.05" valign="center" textcolor="CCCCCCFF"
+  <label pos="10.2 -2.4" z-index="1" size="20 2.6" textsize="1.05" valign="center" textcolor="CCCCCCFF"
          text="{{ period_label }}"/>
+
+  <!-- Time left to bet, right-aligned on the status row. Empty unless a close is armed, so the row just
+       reads as before in the modes that have no timed window. -->
+  <label pos="38.8 -2.4" z-index="2" size="12 2.6" textsize="1.05" halign="right" valign="center"
+         textcolor="FFDF9CFF" text="{{ time_left }}"/>
 
   <label pos="1.2 -5.7" z-index="1" size="37.6 2.6" textsize="1.05" valign="center" textcolor="CCCCCCFF"
          text="{{ total_pot }} planets played -- {{ bet_count }} {{ bet_word }}"/>

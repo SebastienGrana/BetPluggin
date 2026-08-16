@@ -14,6 +14,20 @@ from pyplanet.views.template import TemplateView
 from .models import Bet
 
 
+def format_time_left(closes_at):
+	"""
+	"1m20s" / "45s" for a `time.time()` deadline, or None when there is nothing to count down to.
+
+	Shared by the widget and the market window so the two can never disagree about how long is left.
+	"""
+	if not closes_at:
+		return None
+	left = int(closes_at - time.time())
+	if left <= 0:
+		return None
+	return '{}m{:02d}s'.format(left // 60, left % 60) if left >= 60 else '{}s'.format(left)
+
+
 class BetListStyleMixin:
 	"""
 	Gives each list window a colour of its own: a pale wash over the whole card, a slightly stronger one
@@ -188,10 +202,16 @@ class BetWidget(WidgetView):
 		else:
 			period_label = 'This map'
 
+		# Only while betting is actually open: a countdown next to a CLOSED badge would be asking players
+		# to watch a clock that buys them nothing. This is the widget most players will read instead of
+		# opening the market window, so it is the countdown that matters most.
+		time_left = format_time_left(self.app.market_closes_at) if self.app.market_is_open else None
+
 		context.update({
 			'status': status,
 			'status_color': status_color,
 			'period_label': period_label,
+			'time_left': time_left or '',
 			'total_pot': total_pot,
 			'bet_count': bet_count,
 			'bet_word': 'bet' if bet_count == 1 else 'bets',
@@ -421,18 +441,12 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 		if not self.app.market_is_open:
 			return 'Betting is currently closed'
 
-		# How long is left to bet, when an auto-close is armed. This is a snapshot taken as the window
-		# renders, not a ticking clock -- a manialink list is drawn once and then sits there -- so it's
-		# phrased as an approximation rather than a countdown that would visibly go stale. The chat
-		# warning shortly before the close is what catches players who left the window open.
-		countdown = ''
-		closes_at = self.app.market_closes_at
-		if closes_at:
-			left = int(closes_at - time.time())
-			if left > 0:
-				countdown = ' -- about {} left'.format(
-					'{}m{:02d}s'.format(left // 60, left % 60) if left >= 60 else '{}s'.format(left)
-				)
+		# How long is left to bet, when an auto-close is armed. A manialink list is drawn once and never
+		# redraws itself, so this is a snapshot at render time -- what keeps it honest is the app's ticker
+		# (BetPluggin._tick_market_countdown), which re-renders every open window on a schedule that
+		# tightens as the close approaches. Worst case it trails reality by one tick interval.
+		left = format_time_left(self.app.market_closes_at)
+		countdown = ' -- {} left'.format(left) if left else ''
 
 		return 'Betting is OPEN{} -- pick ONE driver, up to {} bets on them'.format(
 			countdown, self.app.MAX_BETS_PER_PERIOD

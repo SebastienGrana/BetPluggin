@@ -192,9 +192,14 @@ class BetplugginApp(AppConfig):
 		# Pending auto-close of the betting window for the period currently open. See _schedule_market_close.
 		self.market_close_task = None
 
-		# When that auto-close is due to fire (time.time()), or None when nothing is armed. Kept purely
-		# so the market window can tell players how long they have left to bet.
+		# When that auto-close is due to fire (time.time()), or None when nothing is armed. Kept so the
+		# widget and the market window can tell players how long they have left to bet.
 		self.market_closes_at = None
+
+		# Redraws that countdown on a schedule while the window is open. A manialink is a static drawing:
+		# nothing on the client counts anything down, so a "live" timer has to be the server re-rendering.
+		# See _tick_market_countdown for why this is not simply a 1s loop.
+		self.market_tick_task = None
 
 		# When the betting window last shut on a pool that is still alive (time.time()), or None. Only
 		# used to grant late payment confirmations a short grace -- see _within_stake_grace.
@@ -522,6 +527,10 @@ class BetplugginApp(AppConfig):
 		if task and not task.done():
 			task.cancel()
 
+		tick, self.market_tick_task = self.market_tick_task, None
+		if tick and not tick.done():
+			tick.cancel()
+
 	async def _period_time_limit(self):
 		"""
 		How many seconds the period now starting is expected to last, or None if that can't be known.
@@ -577,10 +586,47 @@ class BetplugginApp(AppConfig):
 				return
 			delay = limit * percent / 100
 
-		# Remembered so the market window can show how long is left -- see BetMarketView.get_title.
+		# Remembered so the widget and the market window can show how long is left.
 		self.market_closes_at = time.time() + delay
 		# Fire and forget: this sleeps for most of the map, and _open_market is on the map_begin path.
 		self.market_close_task = asyncio.ensure_future(self._close_market_after(delay))
+		self.market_tick_task = asyncio.ensure_future(self._tick_market_countdown())
+
+	# How often the countdown is redrawn, as (seconds still left, seconds between redraws). Read in order,
+	# first match wins. A flat 1s tick would be a full re-render of the widget for every player plus a
+	# round of database queries per open market window, every second, for the whole betting window -- to
+	# animate a number nobody is watching while there are still two minutes to go. The rate tightens as
+	# the close approaches, which is where a second of staleness actually costs a player a bet.
+	COUNTDOWN_TICKS = ((15, 1), (60, 5), (None, 15))
+
+	async def _tick_market_countdown(self):
+		"""
+		Redraw the countdown while betting is open. Cancelled by _cancel_market_close.
+
+		Nothing on the client is counting: a manialink is drawn once and then sits there. So "live" here
+		means the server pushing a fresh render, and the displayed time trails reality by up to one tick.
+		"""
+		try:
+			while True:
+				closes_at = self.market_closes_at
+				if not closes_at or not self.market_is_open:
+					return
+				left = closes_at - time.time()
+				if left <= 0:
+					# _close_market_after owns the close itself, and refreshes the UI when it happens.
+					return
+
+				interval = next(step for threshold, step in self.COUNTDOWN_TICKS if threshold is None or left <= threshold)
+				# Never sleep past the deadline: overshooting would leave the last redraw showing a stale
+				# "10s left" while the market is already shut.
+				await asyncio.sleep(min(interval, left))
+				await self._refresh_ui()
+		except asyncio.CancelledError:
+			raise
+		except Exception as e:
+			# A ticker is decoration. If it dies, betting must carry on without it rather than take the
+			# period down -- but silently swallowing it would make a stuck countdown impossible to explain.
+			logger.warning('BetPluggin countdown ticker stopped: {}'.format(e))
 
 	async def _close_market_after(self, delay):
 		"""Warn, then shut the betting window mid-period. Cancelled by _cancel_market_close."""
