@@ -75,10 +75,6 @@ RESULT_POPUP_SECONDS = 12
 # loading screen misses it entirely. Kept short -- it's a reminder, not a second announcement.
 RESULT_REPLAY_SECONDS = 6
 
-# How long before the betting window shuts that players are warned in chat. Long enough to still act
-# on it, short enough that the warning isn't forgotten before it matters.
-MARKET_CLOSING_WARNING_SECONDS = 15
-
 # `scores` fires at the end of every round as well as at the end of the map, and only the latter is a
 # final standing. Matched case-insensitively as a substring of the callback's `section`. An empty or
 # missing section is also treated as final -- that's what map-scoped modes report at the podium.
@@ -176,6 +172,14 @@ class BetplugginApp(AppConfig):
 			default=50
 		)
 
+		self.setting_closing_warning = Setting(
+			'market_closing_warning_seconds', 'Closing warning (seconds)', Setting.CAT_BEHAVIOUR, type=int,
+			description='How long before the betting window shuts that players are warned in chat. Long '
+						"enough to still act on it, short enough that the warning isn't forgotten before "
+						'it matters.',
+			default=30
+		)
+
 		# Pending auto-close of the betting window for the period currently open. See _schedule_market_close.
 		self.market_close_task = None
 
@@ -251,7 +255,7 @@ class BetplugginApp(AppConfig):
 		await self.context.setting.register(
 			self.setting_quick_bet_amounts,
 			self.setting_min_stake, self.setting_max_stake,
-			self.setting_betting_window,
+			self.setting_betting_window, self.setting_closing_warning,
 		)
 
 		self.context.signals.listen(mp_signals.map.map_begin, self.map_begin)
@@ -552,7 +556,7 @@ class BetplugginApp(AppConfig):
 		"""Warn, then shut the betting window mid-period. Cancelled by _cancel_market_close."""
 		# On a very short period the warning would land before betting even opened, so it gives up at
 		# most half the window rather than pushing the close itself later.
-		warning = min(MARKET_CLOSING_WARNING_SECONDS, delay / 2)
+		warning = min(await self.setting_closing_warning.get_value(), delay / 2)
 
 		await asyncio.sleep(max(delay - warning, 0))
 		if self.market_is_open:

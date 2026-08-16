@@ -87,8 +87,8 @@ restart PyPlanet.
 
 ## Notes
 
-- `//settings` in-game lets an admin tweak `quick_bet_amounts`, `bet_minimum_stake` and
-  `bet_maximum_stake` without touching code.
+- `//settings` in-game lets an admin tweak `quick_bet_amounts`, `bet_minimum_stake`,
+  `bet_maximum_stake`, `betting_window_percent` and `market_closing_warning_seconds` without touching code.
 - BetPluggin never tracks a player's Planets balance itself (there's no API to query it) — only its own
   betting history (`Bet` table), used for `/wallet` and the leaderboard. Live balance is always whatever
   your game client shows you.
