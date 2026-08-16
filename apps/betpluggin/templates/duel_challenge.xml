@@ -1,0 +1,71 @@
+<!--
+  "Someone just challenged you." Shown to the challenged player only, for as long as the accept
+  timeout runs.
+
+  Anchored to the left edge, below the bet widget, and deliberately NOT centred. It used to be a large
+  centred panel on the argument that a question you don't notice is a question that times out -- but
+  the player being asked is driving a race at the time, and a window across the middle of the screen
+  takes the road away from them. Losing the map to read a challenge is a worse outcome than missing
+  one, so it now sits in the same left-hand column as the widget: in peripheral vision, on the side of
+  the screen this plugin already owns, clear of the road and of the car.
+
+  Nothing on it refreshes. The amounts are fixed when the challenge is made, so no redraw can move a
+  button out from under the cursor of someone who is already reaching for it.
+
+  The <manialink> wrapper is added by PyPlanet's UI manager; templates only provide the body.
+-->
+<frame pos="-158 34" z-index="150">
+  <quad pos="0 0" z-index="0" size="62 39" bgcolor="070710F7"/>
+  <quad pos="0 0" z-index="1" size="62 0.6" bgcolor="F08A2EFF"/>
+
+  <!-- Header -->
+  <quad pos="0 -0.6" z-index="1" size="62 6" bgcolor="1A1424FF"/>
+  <quad pos="0 -0.6" z-index="2" size="1 6" bgcolor="F08A2EFF"/>
+  <label pos="2.8 -3.6" z-index="3" size="30 3.4" textfont="RajdhaniMono" textsize="1.8" valign="center"
+         textcolor="F08A2EFF" text="DUEL"/>
+  <label pos="59.2 -3.6" z-index="3" size="28 2.6" textsize="0.95" halign="right" valign="center"
+         textcolor="8A8AA8FF" text="{{ timeout }}s to answer"/>
+
+  <!-- The challenge itself. The nickname is the largest thing here because it is the only part a
+       player needs to read before they already know what this is about. -->
+  <label pos="31 -10.2" z-index="2" size="57 3.4" textsize="1.4" halign="center" valign="center"
+         textcolor="FFFFFFFF" text="{{ challenger }}$z$s"/>
+  <label pos="31 -14.2" z-index="2" size="57 2.6" textsize="0.95" halign="center" valign="center"
+         textcolor="BBBBD0FF" text="puts up $fff{{ challenge_amount }}$z$s to finish ahead of you."/>
+
+  <quad pos="2.5 -17" z-index="2" size="57 0.15" bgcolor="FFFFFF16"/>
+
+  <label pos="2.5 -19.4" z-index="2" size="57 2.2" textsize="0.8" valign="center" textcolor="8A8AA8FF"
+         text="ACCEPT, AND PUT UP:"/>
+
+  <!-- Three one-click answers. Half and double are not decoration: two drivers of different speed only
+       get an interesting duel if the slower one can ask for a handicap, and asking for it has to be as
+       cheap as agreeing. -->
+  {% for button in buttons %}
+    {% if button.shown %}
+      <quad pos="{{ 2.5 + button.index * 19.3 }} -20.9" z-index="2" size="18.4 6" bgcolor="F08A2EE0"
+            action="{{ id }}__accept_{{ button.index }}" scriptevents="1"/>
+      <label pos="{{ 11.7 + button.index * 19.3 }} -23.1" z-index="3" size="17.8 3" textfont="RajdhaniMono"
+             textsize="1.5" halign="center" valign="center" textcolor="140A00FF"
+             text="{{ button.amount }}" action="{{ id }}__accept_{{ button.index }}" scriptevents="1"/>
+      <label pos="{{ 11.7 + button.index * 19.3 }} -25.5" z-index="3" size="17.8 2" textsize="0.7"
+             halign="center" valign="center" textcolor="3A2400FF" text="{{ button.label }}"
+             action="{{ id }}__accept_{{ button.index }}" scriptevents="1"/>
+    {% endif %}
+  {% endfor %}
+
+  <!-- The two quieter answers, flat and grey so they never compete with the row above for the eye.
+       Refusing costs nothing and must stay easy to find; it is not a thing to be nudged away from. -->
+  <quad pos="2.5 -28.4" z-index="2" size="28 4.8" bgcolor="FFFFFF12"
+        action="{{ id }}__custom" scriptevents="1"/>
+  <label pos="16.5 -30.8" z-index="3" size="27 2.6" textsize="0.9" halign="center" valign="center"
+         textcolor="D5D5E8FF" text="Another amount" action="{{ id }}__custom" scriptevents="1"/>
+
+  <quad pos="31.1 -28.4" z-index="2" size="28 4.8" bgcolor="FFFFFF12"
+        action="{{ id }}__decline" scriptevents="1"/>
+  <label pos="45.1 -30.8" z-index="3" size="27 2.6" textsize="0.9" halign="center" valign="center"
+         textcolor="FF9C9CFF" text="Refuse" action="{{ id }}__decline" scriptevents="1"/>
+
+  <label pos="31 -35.4" z-index="2" size="57 2.2" textsize="0.7" halign="center" valign="center"
+         textcolor="6A6A85FF" text="Nothing is charged until you answer."/>
+</frame>

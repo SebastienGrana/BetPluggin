@@ -1,40 +1,138 @@
 {% extends 'core.views/generics/widget.xml' %}
 
 {% block content %}
-  <quad pos="0 0" z-index="0" size="40 15.5" bgcolor="0F0F1AE0"/>
+  <!-- Layout notes, because every number below is hand-placed:
+         0     to -5     header  (identity + state)
+         -5    to -12.4  the two headline figures: the pot, and the clock
+         -12.4 to -14.9  your own position
+         -15.1 to -18.5  the one button that matters
+         -18.8 to -21.4  the three secondary windows
+       Nothing here is centred by accident: the two figures are the only large text, so the eye lands
+       on "how much is at stake" and "how long do I have" before it reads a single word.
 
-  <quad pos="1.2 -1.2" z-index="1" size="8 2.6" bgcolor="{{ status_color }}"/>
-  <label pos="5.2 -2.3" z-index="2" size="8 2.6" textsize="1" halign="center" valign="center" textcolor="000000FF" text="{{ status }}"/>
+       Every label's declared width is its real budget, not a round number: a label draws over whatever
+       is under it, so two labels whose boxes overlap only look fine for as long as one of them is
+       empty. Half of this widget's pairs were in exactly that state -- readable in an idle screenshot,
+       and unreadable the moment a nickname or a value turned up. Left-aligned and right-aligned pairs
+       on the same line now leave a real gap between them. -->
 
-  <label pos="10.2 -2.4" z-index="1" size="20 2.6" textsize="1.05" valign="center" textcolor="CCCCCCFF"
-         text="{{ period_label }}"/>
+  <quad pos="0 0" z-index="0" size="40 21.8" bgcolor="070710F2"/>
+  <!-- Top edge in the state colour: the widget itself tells you whether betting is live, even from the
+       corner of your eye while you're driving. -->
+  <quad pos="0 0" z-index="3" size="40 0.35" bgcolor="{{ status_color }}"/>
 
-  <!-- Time left to bet, right-aligned on the status row. Empty unless a close is armed, so the row just
-       reads as before in the modes that have no timed window. -->
-  <label pos="38.8 -2.4" z-index="2" size="12 2.6" textsize="1.05" halign="right" valign="center"
-         textcolor="FFDF9CFF" text="{{ time_left }}"/>
+  <!-- Header -->
+  <quad pos="0 -0.35" z-index="1" size="40 4.65" bgcolor="15152BFF"/>
+  <quad pos="0 -0.35" z-index="2" size="1 4.65" bgcolor="{{ status_color }}"/>
+  <label pos="2.6 -2.6" z-index="2" size="6.4 3" textfont="RajdhaniMono" textsize="1.6" valign="center"
+         textcolor="FFFFFFFF" text="BETS"/>
+  <label pos="9.8 -2.7" z-index="2" size="19.8 2.6" textsize="0.85" valign="center" textcolor="7E7EA0FF"
+         text="{{ favourite }}"/>
+  <quad pos="30.4 -1.5" z-index="2" size="8.4 2.4" bgcolor="{{ status_color }}"/>
+  <label pos="34.6 -2.7" z-index="3" size="8.4 2.4" textsize="0.95" halign="center" valign="center"
+         textcolor="0A0A14FF" text="{{ status }}"/>
 
-  <label pos="1.2 -5.7" z-index="1" size="37.6 2.6" textsize="1.05" valign="center" textcolor="CCCCCCFF"
-         text="{{ total_pot }} planets played -- {{ bet_count }} {{ bet_word }}"/>
+  <!-- The two headline figures -->
+  <quad pos="0 -5" z-index="1" size="40 7.4" bgcolor="FFFFFF08"/>
+  <quad pos="20 -6.2" z-index="2" size="0.1 5" bgcolor="FFFFFF14"/>
 
-  <quad pos="0 -7.9" z-index="1" size="40 3.6" bgcolor="09F4FF33" action="{{ id }}__open_market" scriptevents="1"/>
-  <label pos="20 -9.5" z-index="2" size="38 3" textsize="1.1" halign="center" valign="center" textcolor="FFFFFFFF"
-         text="Open &#171; betting market &#187;" action="{{ id }}__open_market" scriptevents="1"/>
+  <!-- A figure and its caption are one unit and are placed as one, centred in the band as a pair:
+       -5.85 to -11.55, leaving 0.85 of air above and below. Placing them independently is what made
+       this block look like it had slid downwards -- it had 1.3 of padding above and 0.4 below, so the
+       figures sat away from the header and hard against their own captions. -->
+  <label pos="2.4 -7.65" z-index="2" size="16 3.6" textfont="RajdhaniMono" textsize="2.3" valign="center"
+         textcolor="FFFFFFFF" text="{{ total_pot }}"/>
+  <label pos="2.4 -10.65" z-index="2" size="16 1.8" textsize="0.8" valign="center" textcolor="7E7EA0FF"
+         text="PLANETS &#183; {{ bet_count }} {{ bet_word }}"/>
 
-  <!-- Secondary row. Everything the plugin can show used to be reachable only by typing a command, which
-       in practice means nobody but the author knows it exists. Dimmer and smaller than the market button
-       on purpose: placing a bet stays the one obvious thing to click. -->
-  <!-- Each button carries the colour of the window it opens (see BetListStyleMixin.ACCENTS), so the panel
-       that appears is visibly the one that was clicked. -->
-  <quad pos="0.8 -12" z-index="1" size="12.6 3" bgcolor="2FC06A44" action="{{ id }}__open_targets" scriptevents="1"/>
-  <label pos="7.1 -13.5" z-index="2" size="12 2.6" textsize="0.9" halign="center" valign="center" textcolor="DDDDDDFF"
-         text="Who to bet on" action="{{ id }}__open_targets" scriptevents="1"/>
+  <label pos="37.6 -7.65" z-index="2" size="16 3.6" textfont="RajdhaniMono" textsize="2.3" halign="right"
+         valign="center" textcolor="{{ status_color }}" text="{{ time_value }}"/>
+  <label pos="37.6 -10.65" z-index="2" size="16 1.8" textsize="0.8" halign="right" valign="center"
+         textcolor="7E7EA0FF" text="{{ time_caption }}"/>
 
-  <quad pos="13.7 -12" z-index="1" size="12.6 3" bgcolor="E0A93044" action="{{ id }}__open_leaderboard" scriptevents="1"/>
-  <label pos="20 -13.5" z-index="2" size="12 2.6" textsize="0.9" halign="center" valign="center" textcolor="DDDDDDFF"
-         text="Leaderboard" action="{{ id }}__open_leaderboard" scriptevents="1"/>
+  <!-- Your own position. The plugin already knew this per player and never showed it, so the one thing
+       you couldn't check without opening a window was your own bet. -->
+  <quad pos="0 -12.4" z-index="2" size="40 0.1" bgcolor="FFFFFF14"/>
+  <label pos="2.4 -13.6" z-index="2" size="12 2" textsize="0.8" valign="center" textcolor="7E7EA0FF"
+         text="YOUR BET"/>
+  <label pos="37.6 -13.6" z-index="2" size="22 2" textsize="0.95" halign="right" valign="center"
+         textcolor="FFFFFFFF" text="{{ own_bets|default('') }}"/>
 
-  <quad pos="26.6 -12" z-index="1" size="12.6 3" bgcolor="FFFFFF18" action="{{ id }}__open_wallet" scriptevents="1"/>
-  <label pos="32.9 -13.5" z-index="2" size="12 2.6" textsize="0.9" halign="center" valign="center" textcolor="DDDDDDFF"
-         text="My stats" action="{{ id }}__open_wallet" scriptevents="1"/>
+  <!-- Primary action. Filled and dark-on-bright while betting is open, flat and grey once it isn't:
+       the button stops shouting at you when there is nothing to click it for. -->
+  <quad pos="1.2 -15.1" z-index="2" size="37.6 3.4" bgcolor="{{ cta_color }}"
+        action="{{ id }}__open_market" scriptevents="1"/>
+  <label pos="20 -16.8" z-index="3" size="37 3" textsize="1.2" halign="center" valign="center"
+         textcolor="{{ cta_text_color }}" text="{{ cta_label }}"
+         action="{{ id }}__open_market" scriptevents="1"/>
+
+  <!-- Secondary windows. Same neutral fill for all three so they read as one row, told apart by the
+       colour of their label -- which is the colour of the window each one opens (BetListStyleMixin
+       ACCENTS). The tinted fills they used to have made the row look like three unrelated warnings. -->
+  <quad pos="1.2 -18.8" z-index="2" size="12 2.6" bgcolor="FFFFFF0E" action="{{ id }}__open_targets" scriptevents="1"/>
+  <label pos="7.2 -20.1" z-index="3" size="11.4 2.2" textsize="0.8" halign="center" valign="center"
+         textcolor="7FE0A5FF" text="Who to bet on" action="{{ id }}__open_targets" scriptevents="1"/>
+
+  <quad pos="14 -18.8" z-index="2" size="12 2.6" bgcolor="FFFFFF0E" action="{{ id }}__open_leaderboard" scriptevents="1"/>
+  <label pos="20 -20.1" z-index="3" size="11.4 2.2" textsize="0.8" halign="center" valign="center"
+         textcolor="F0C66AFF" text="Leaderboard" action="{{ id }}__open_leaderboard" scriptevents="1"/>
+
+  <quad pos="26.8 -18.8" z-index="2" size="12 2.6" bgcolor="FFFFFF0E" action="{{ id }}__open_wallet" scriptevents="1"/>
+  <label pos="32.8 -20.1" z-index="3" size="11.4 2.2" textsize="0.8" halign="center" valign="center"
+         textcolor="B4BCFFFF" text="My stats" action="{{ id }}__open_wallet" scriptevents="1"/>
+
+  <!-- The duel band, present only while a duel is. The widget grows by DUEL_BAND_HEIGHT (13.6) to make
+       room for it and shrinks back afterwards, so the rest of the time this costs nothing.
+
+       Everything a spectator has to know to answer is on it: who is up against whom, what each of them
+       put up, what the room has put behind each of them, and the multiplier that buys. The two buttons
+       stake a fixed amount in one click -- see BetWidget._duel_side_amount for why there is no prompt.
+
+         -21.8 to -25.1  band header (identity + what stage the duel is at)
+         -25.1 to -31.3  the two sides, mirrored around the centre line
+         -31.6 to -35.0  the two answers
+
+       Each side is three stacked full-width lines rather than a name with figures beside it. A
+       Trackmania nickname has no length limit and carries its own colour and size codes, so anything
+       sharing its line gets written over -- which is exactly what the first version did. -->
+  {% if duel_shown %}
+    <quad pos="0 -21.8" z-index="0" size="40 14.2" bgcolor="0B0714F7"/>
+    <quad pos="0 -21.8" z-index="3" size="40 0.35" bgcolor="F08A2EFF"/>
+
+    <quad pos="0 -22.15" z-index="1" size="40 2.95" bgcolor="1A1424FF"/>
+    <label pos="2.4 -23.6" z-index="2" size="7 2.4" textfont="RajdhaniMono" textsize="1.15"
+           valign="center" textcolor="F08A2EFF" text="DUEL"/>
+    <label pos="37.6 -23.6" z-index="2" size="27 2.2" textsize="0.75" halign="right" valign="center"
+           textcolor="8A8AA8FF" text="{{ duel_caption }}"/>
+
+    <!-- The centre line is what makes this read as a confrontation rather than as two more rows of
+         statistics: the same numbers, mirrored, with the divider between them. -->
+    <quad pos="19.95 -25.7" z-index="2" size="0.1 5.4" bgcolor="FFFFFF14"/>
+
+    <label pos="2.4 -26.6" z-index="2" size="16.2 2.4" textsize="0.9" valign="center"
+           textcolor="FFFFFFFF" text="{{ duel_left_name }}$z$s"/>
+    <label pos="2.4 -28.5" z-index="2" size="16.2 2.2" textsize="0.7" valign="center"
+           textcolor="7E7EA0FF" text="puts up {{ duel_left_stake }}"/>
+    <label pos="2.4 -30.3" z-index="2" size="16.2 2.2" textsize="0.7" valign="center"
+           textcolor="F0C66AFF" text="{{ duel_left_market }}"/>
+
+    <label pos="21.4 -26.6" z-index="2" size="16.2 2.4" textsize="0.9" valign="center"
+           textcolor="FFFFFFFF" text="{{ duel_right_name }}$z$s"/>
+    <label pos="21.4 -28.5" z-index="2" size="16.2 2.2" textsize="0.7" valign="center"
+           textcolor="7E7EA0FF" text="puts up {{ duel_right_stake }}"/>
+    <label pos="21.4 -30.3" z-index="2" size="16.2 2.2" textsize="0.7" valign="center"
+           textcolor="F0C66AFF" text="{{ duel_right_market }}"/>
+
+    <quad pos="1.2 -31.6" z-index="2" size="18.2 3.4" bgcolor="{{ duel_left_color }}"
+          action="{{ id }}__back_challenger" scriptevents="1"/>
+    <label pos="10.3 -33.3" z-index="3" size="17.6 3" textsize="0.95" halign="center" valign="center"
+           textcolor="{{ duel_left_text_color }}" text="{{ duel_left_label }}"
+           action="{{ id }}__back_challenger" scriptevents="1"/>
+
+    <quad pos="20.6 -31.6" z-index="2" size="18.2 3.4" bgcolor="{{ duel_right_color }}"
+          action="{{ id }}__back_opponent" scriptevents="1"/>
+    <label pos="29.7 -33.3" z-index="3" size="17.6 3" textsize="0.95" halign="center" valign="center"
+           textcolor="{{ duel_right_text_color }}" text="{{ duel_right_label }}"
+           action="{{ id }}__back_opponent" scriptevents="1"/>
+  {% endif %}
 {% endblock %}

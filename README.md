@@ -50,6 +50,44 @@ out through the server's own in-game payment system (no separate fictional curre
 - If a bet's payment confirms *after* betting has already closed (you took too long on the popup, or
   the map/round changed), it's automatically refunded.
 
+## Duels
+
+Alongside the pari-mutuel market, any two players can bet against each other directly on the map being
+played: whoever finishes ahead of the other takes both stakes. The pot is not shared with anyone and the
+server takes no margin — this one is strictly between the two of them.
+
+- `/duel <login> <amount>` challenges someone. Nothing is charged yet: the challenged player gets a
+  panel in the corner of their screen with one-click answers (the same amount, half it, double it),
+  plus *Another amount* and *Refuse*. Half and double are there so two drivers of different speed can
+  agree a handicap as easily as they agree a stake. The challenge expires on its own after
+  `duel_accept_seconds`.
+- Both stakes are only taken once the duel is accepted; if either payment fails, whoever did pay is
+  refunded and the duel never starts.
+- **Spectators can back a side** (`/duelbet <login> <amount>`, or the two buttons that appear on the HUD
+  widget while a duel runs). Those side bets are pari-mutuel between themselves, so backing the
+  underdog pays more. Turn this off with the `duel_spectators` setting.
+- A duel that can't be settled honestly is refunded in full rather than decided: if either player has no
+  result on the map, or the two of them finish dead level, everybody gets their planets back.
+- `/duels` is the duel record board — who has won the most duels on this server. Duel wins also show as
+  a column on the *Who to bet on* board.
+
+## Admin commands the plugin reacts to
+
+BetPluggin watches PyPlanet's own admin commands, because they change the shape of the thing people are
+betting on. This works from the chat line, from the admin toolbar buttons, and from any other app that
+runs them.
+
+| Command | What betting does |
+|---|---|
+| `//skip`, `//next`, `//previous`, `//restart` (and `//res`, `//rs`, `//prev`) | **Betting is called off and everyone is refunded** — the market pot and any running duel, spectators included. A map that was cut short or is about to be driven again from scratch has no honest winner, and the times on the board belong to a race nobody finished. Nothing is written to anyone's record: a skipped map doesn't count as a win or a loss and doesn't dent a streak. |
+| `//extend` | The betting window is re-measured against the map's new length, so "open for the first 30% of the map" stays true after the map gets longer. Only applies to the percentage window — `betting_window_seconds` is an absolute duration and an extension is no reason to hand out more of it. |
+| `//pause` / `//unpause` | The betting countdown freezes and resumes with the match. Without this the window would quietly expire while nobody is driving. |
+| `//endwu` | Already closes betting in round-based modes, as the end of the warmup always does. |
+
+`//replay`, `//mode`, `//shuffle`, `//endround` and the maplist commands don't affect a market in
+progress, so betting ignores them. There is no `/retry` command in PyPlanet — retrying is the player's
+own in-game restart and has no bearing on a bet.
+
 **Commands**
 
 | Command | Description |
@@ -60,11 +98,17 @@ out through the server's own in-game payment system (no separate fictional curre
 | `/wallet`, `/stats`, `/betstats` | Show your BetPluggin wagering history (your *live* Planets balance is shown in your game client, not here) |
 | `/bettop`, `/betladder` | Open the all-time leaderboard (bets, win %, wagered, net profit) |
 | `/bettargets`, `/targets`, `/cotes` | Open the "who's worth betting on" board (past wins, usual multiplier, badges per player) |
+| `/duel <login> <amount>` | Challenge a player head to head — whoever finishes ahead takes both stakes |
+| `/accept <amount>` | Accept the duel you were challenged to (or use the popup panel) |
+| `/decline`, `/refuse` | Turn down a challenge. Nothing is charged |
+| `/duelbet <login> <amount>`, `/back` | Back one of the two players in the running duel |
+| `/duels`, `/duel list`, `/dueltop` | Open the duel record board |
 | `//bet close` (admin) | Close betting for the current period early |
 | `//bet open` (admin) | Force-open betting for the current period |
+| `//bet help` (admin) | List the admin commands, including the native ones betting reacts to |
 
 A persistent HUD widget also shows the current market status (open/closed, pot, your own bets) with a
-button that opens `/betmarket`.
+button that opens `/betmarket`, and grows a duel band while a duel is running.
 
 ## Project layout
 
@@ -76,10 +120,13 @@ settings/
   apps.py             which apps/plugins get loaded, including apps.betpluggin
   local.py            reads DEDICATED/OWNERS from environment variables - safe to commit, no secrets in it
 apps/betpluggin/
-  __init__.py          the plugin: mode detection, market lifecycle, SendBill/Pay plumbing, odds, commands
+  __init__.py          the plugin: mode detection, market lifecycle, SendBill/Pay plumbing, odds, commands,
+                       and the hooks that make it react to PyPlanet's own admin commands
+  duel.py              head-to-head duels: challenge/accept flow, spectator side bets, settlement
   models.py            Bet table (a wager, scoped to a map or a round, tracks its own payment state)
-  views.py              in-game UI: BetWidget (HUD), BetMarketView, BetLeaderboardView, BetTargetsView, BetResultView
-  templates/            manialink markup: widget.xml (HUD), list.xml (leaderboard/targets tables), result.xml (payout popup)
+  views.py              in-game UI: BetWidget (HUD), BetMarketView, BetLeaderboardView, BetTargetsView, BetResultView, BetDuelBoardView
+  templates/            manialink markup: widget.xml (HUD), duel_challenge.xml (the challenge panel),
+                       list.xml (leaderboard/targets tables), result.xml (payout popup)
 .env.example           copy to .env and fill in your real server details (gitignored)
 ```
 
@@ -99,9 +146,19 @@ restart PyPlanet.
 ## Notes
 
 - `//settings` in-game lets an admin tweak `quick_bet_amounts`, `bet_minimum_stake`,
-  `bet_maximum_stake`, `betting_window_seconds`, `betting_window_percent` and
-  `market_closing_warning_seconds` without touching code. `quick_bet_amounts` takes as many amounts as
-  you like — the market window sizes its buttons to fit however many you configure.
+  `bet_maximum_stake`, `betting_window_seconds`, `betting_window_percent`,
+  `market_closing_warning_seconds` and the duel settings (`duel_enabled`, `duel_minimum_stake`,
+  `duel_maximum_stake`, `duel_accept_seconds`, `duel_spectators`) without touching code.
+  `quick_bet_amounts` takes as many amounts as you like — the market window sizes its buttons to fit
+  however many you configure. Everything that affects how the plugin *feels* is a setting rather than a
+  constant, so it can be tuned between games without a redeploy.
+- The reactions to `//skip`, `//restart`, `//extend` and `//pause` are installed by wrapping the target
+  of PyPlanet's own registered `Command` objects (`_install_command_hooks`), and undone on app stop.
+  That is deliberately the one place all three call paths meet: there is no signal for "an admin skipped
+  the map", `map_start`'s `restarted` flag arrives *after* the pot would already have been paid out, and
+  listening for the chat line would miss the admin toolbar entirely — its buttons call the command
+  dispatcher directly. If PyPlanet ever renames those commands, the plugin logs a warning at startup
+  naming the ones it could not hook rather than failing silently.
 - BetPluggin never tracks a player's Planets balance itself (there's no API to query it) — only its own
   betting history (`Bet` table), used for `/wallet` and the leaderboard. Live balance is always whatever
   your game client shows you.

@@ -13,6 +13,15 @@ class Bet(TimedModel):
 	SCOPE_MAP = 'map'
 	SCOPE_ROUND = 'round'
 
+	TYPE_WINNER = 'winner'
+	"""The original bet: `target_login` wins the period. Every row written before duels existed."""
+	TYPE_RANGE = 'range'
+	"""`target_login` finishes between pos_min and pos_max. Not implemented yet -- see docs/conception-paris-position.md."""
+	TYPE_DUEL = 'duel'
+	"""One of the two sides of a declared duel: `target_login` (the staker) finishes ahead of `opponent_login`."""
+	TYPE_DUEL_SIDE = 'duel_side'
+	"""A spectator backing one side of a duel. Same shape as TYPE_DUEL, different pot."""
+
 	STATE_PENDING = 'pending'
 	"""SendBill sent, waiting for the player to confirm (or decline) the payment in their client."""
 	STATE_ACTIVE = 'active'
@@ -69,3 +78,34 @@ class Bet(TimedModel):
 
 	won = BooleanField(null=True)
 	payout = IntegerField(null=True)
+
+	# ------------------------------------------------------------------
+	# Added by migration 001. Every one of them is nullable or defaulted, because the rows already in
+	# the table have no value for them -- see migrations/README.md.
+	# ------------------------------------------------------------------
+
+	bet_type = CharField(max_length=12, default=TYPE_WINNER, index=True)
+	"""
+	Which kind of bet this row is. Defaults to TYPE_WINNER so the whole existing history reads back as
+	what it always was, and so every query that predates duels keeps working unchanged.
+	"""
+
+	opponent_login = CharField(max_length=100, null=True, index=True)
+	"""
+	The other driver in a duel. `target_login` is the one being backed, `opponent_login` the one they
+	have to finish ahead of. Null for every other bet type.
+	"""
+
+	pos_min = IntegerField(null=True)
+	pos_max = IntegerField(null=True)
+	"""
+	Inclusive finishing-position range for TYPE_RANGE. Reserved by this migration so the position bets
+	designed in docs/conception-paris-position.md can ship without touching the schema again -- adding
+	a column at the same time as a new model is the one thing this app's migrations cannot do.
+	"""
+
+	payout_multiplier = FloatField(null=True)
+	"""
+	A *promised* multiplier, unlike `odds` which is only the indicative pari-mutuel quote at the time
+	of the bet. Set on bets the server prices itself; null on every pari-mutuel bet, including duels.
+	"""

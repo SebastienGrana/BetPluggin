@@ -1,7 +1,7 @@
 <!--
   Transient per-player result card, shown only to players who actually had a bet on the period that
   just resolved. Deliberately narrow and parked in the left column just under the bet widget (whose
-  bottom edge sits at y=68 -- move this if the widget ever changes height again): the podium
+  bottom edge sits at y=61.7 -- move this if the widget ever changes height again): the podium
   scoreboard owns the centre of the screen, so anything wider or more central would sit on top of the
   thing players are trying to read.
 
@@ -10,7 +10,7 @@
 
   The <manialink> wrapper is added by PyPlanet's UI manager; templates only provide the body.
 -->
-<frame pos="-124.5 66.5" z-index="140">
+<frame pos="-124.5 60.2" z-index="140">
   <quad pos="0 0" z-index="0" size="40 20" bgcolor="0F0F1AF0"/>
   <quad pos="0 0" z-index="1" size="40 0.6" bgcolor="{{ accent }}"/>
 

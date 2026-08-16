@@ -27,6 +27,8 @@ import logging
 import math
 import time
 
+from collections import OrderedDict
+
 from pyplanet.apps.config import AppConfig
 from pyplanet.apps.core.maniaplanet import callbacks as mp_signals
 from pyplanet.apps.core.maniaplanet.models import Player
@@ -38,8 +40,11 @@ from pyplanet.apps.core.trackmania.callbacks import (
 from pyplanet.contrib.command import Command
 from pyplanet.contrib.setting import Setting
 
+from .duel import DuelManager
 from .models import Bet
-from .views import BetWidget, BetMarketView, BetLeaderboardView, BetResultView, BetTargetsView
+from .views import (
+	BetWidget, BetMarketView, BetLeaderboardView, BetResultView, BetTargetsView, BetDuelBoardView
+)
 
 # Modes (matched case-insensitively against the mode script name, e.g. "Trackmania/TM_Rounds_Online")
 # that play a map as a series of rounds. Betting in these opens for the warmup only and settles on map
@@ -92,6 +97,15 @@ CHAT_PREFIX = '$z$s$ff0[$fffBet$ff0]$z$s '
 logger = logging.getLogger(__name__)
 
 
+def plural(count, word):
+	"""
+	"1 player" / "3 players". Every count this plugin announces is read as a headcount by whoever reads
+	it, so getting the noun right matters more than the usual "(s)" shrug: "3 bet(s)" was routinely read
+	as three people when it was one player reinforcing three times.
+	"""
+	return '{} {}{}'.format(count, word, '' if count == 1 else 's')
+
+
 class BetplugginApp(AppConfig):
 	game_dependencies = ['trackmania', 'trackmania_next']
 	app_dependencies = ['core.maniaplanet', 'core.trackmania']
@@ -100,6 +114,13 @@ class BetplugginApp(AppConfig):
 	# More than one so a pick can be reinforced as the odds move; the sum is still capped by the
 	# max stake setting, so this never becomes a way to bet above the maximum. See place_bet.
 	MAX_BETS_PER_PERIOD = 3
+
+	# The chat prefix, exposed on the app as well as at module level. duel.py and views.py both need it
+	# and cannot import it back out of this module: both are imported *from* here, on a line above the
+	# one that defines it, so the import would run before the constant exists. The right-hand side below
+	# is that module constant -- the class namespace is still empty at this point, so the name resolves
+	# outward to the module.
+	CHAT_PREFIX = CHAT_PREFIX
 
 	def __init__(self, *args, **kwargs):
 		super().__init__(*args, **kwargs)
@@ -189,6 +210,54 @@ class BetplugginApp(AppConfig):
 			default=30
 		)
 
+		# ------------------------------------------------------------------
+		# Duels. Every number here is a setting rather than a constant on purpose: whether a duel is fun
+		# depends entirely on how long you get to answer one and how big the stakes are allowed to be,
+		# and that can only be found out by playing. Changing a constant means a new deploy; changing a
+		# setting means typing //settings between two maps.
+		# ------------------------------------------------------------------
+
+		self.setting_duel_enabled = Setting(
+			'duel_enabled', 'Duels enabled', Setting.CAT_BEHAVIOUR, type=bool,
+			description='Lets players challenge each other with /duel. A duel is settled between the two '
+						'of them (whoever finishes ahead takes the other\'s stake) and is separate from '
+						'the betting market.',
+			default=True
+		)
+
+		self.setting_duel_min_stake = Setting(
+			'duel_minimum_stake', 'Duel: minimum stake (planets)', Setting.CAT_BEHAVIOUR, type=int,
+			description='Smallest amount either side of a duel can put up. Worth setting higher than the '
+						'market minimum: a duel you barely notice losing is not a duel.',
+			default=50
+		)
+
+		self.setting_duel_max_stake = Setting(
+			'duel_maximum_stake', 'Duel: maximum stake (planets)', Setting.CAT_BEHAVIOUR, type=int,
+			description='Largest amount either side of a duel can put up. Both sides are capped by this '
+						'independently, so the answer to a challenge can still be bigger than the challenge.',
+			default=5000
+		)
+
+		self.setting_duel_accept_seconds = Setting(
+			'duel_accept_seconds', 'Duel: seconds to answer', Setting.CAT_BEHAVIOUR, type=int,
+			description='How long the challenged player has to accept or refuse before the duel is called '
+						'off. Long enough to answer while driving, short enough that the map is not half '
+						'over by the time the duel starts.',
+			default=45
+		)
+
+		self.setting_duel_spectators = Setting(
+			'duel_spectators', 'Duel: let others bet on it', Setting.CAT_BEHAVIOUR, type=bool,
+			description='Lets everyone except the two duellists back a side with /duelbet, in a pot of '
+						'their own that never touches what the two players agreed between themselves.',
+			default=True
+		)
+
+		# Owns the one duel a map may have. Given the app rather than the other way round so every chat
+		# line, refund and payout still goes through the app's single implementation of each.
+		self.duels = DuelManager(self)
+
 		# Pending auto-close of the betting window for the period currently open. See _schedule_market_close.
 		self.market_close_task = None
 
@@ -209,6 +278,26 @@ class BetplugginApp(AppConfig):
 		# round_end for warmup laps exactly as they do for real ones, and those must not open, close or
 		# resolve anything. See warmup_start.
 		self.warmup_active = False
+
+		# When the market currently open was opened (time.time()), or None. The auto-close is computed
+		# from this anchor rather than from "now" so that recomputing it mid-period -- which //extend
+		# forces us to do -- still lands the window where it would have landed had the period always
+		# had its new length. See _schedule_market_close.
+		self.market_opened_at = None
+
+		# S_TimeLimit as it was when the auto-close was last armed, so //extend can tell whether the
+		# period it is lengthening is the one our window was measured against.
+		self.period_time_limit = None
+
+		# When //pause froze the game (time.time()), or None. The betting countdown is an asyncio timer
+		# and knows nothing about the game being paused, so it has to be frozen by hand -- otherwise the
+		# window expires while nobody is driving. See _pause_market / _resume_market.
+		self.market_paused_at = None
+
+		# The native PyPlanet commands whose behaviour we react to, as
+		# [(Command instance, original target)] so on_stop can put them back exactly as they were.
+		# See _install_command_hooks.
+		self.hooked_commands = []
 
 	async def on_start(self):
 		await self.instance.command_manager.register(
@@ -246,6 +335,37 @@ class BetplugginApp(AppConfig):
 			),
 
 			Command(
+				command='duels', aliases=['dueltop', 'duelboard'], target=self.chat_duel_board,
+				description='Open the duel record board: who has won the most duels on this server.'
+			),
+
+			Command(
+				command='duel', target=self.chat_duel,
+				description='Challenge another player: whoever finishes ahead takes the other\'s stake. '
+							'Usage: /duel <login> <amount> -- or /duel list for the record board.'
+			).add_param(name='login', type=str, required=False, help='Login of the player you want to duel, or "list".')
+			 .add_param(name='amount', type=int, required=False, help='Planets you are putting up.'),
+
+			# Chat answers as well as the popup window, because the popup is one manialink among many: it
+			# can be missed, dismissed, or lost to a client hiccup, and a duel that can only be answered
+			# through a window nobody can find any more is a duel that dies of a timeout.
+			Command(
+				command='accept', target=self.chat_duel_accept,
+				description='Accept the duel you have been challenged to. Usage: /accept <amount>'
+			).add_param(name='amount', type=int, required=False, help='Planets you put up (defaults to matching).'),
+
+			Command(
+				command='decline', aliases=['refuse'], target=self.chat_duel_decline,
+				description='Turn down the duel you have been challenged to. Nothing is charged.'
+			),
+
+			Command(
+				command='duelbet', aliases=['back'], target=self.chat_duel_bet,
+				description='Back one of the two players in the running duel. Usage: /duelbet <login> <amount>'
+			).add_param(name='login', type=str, required=False, help='Which duellist you are backing.')
+			 .add_param(name='amount', type=int, required=False, help='Amount of planets to bet.'),
+
+			Command(
 				command='open', namespace='bet', target=self.chat_admin_open_betting, admin=True,
 				perms='betpluggin:manage_betting', description='Force-open betting for the current period.'
 			),
@@ -275,6 +395,9 @@ class BetplugginApp(AppConfig):
 			self.setting_min_stake, self.setting_max_stake,
 			self.setting_betting_window_seconds, self.setting_betting_window,
 			self.setting_closing_warning,
+			self.setting_duel_enabled,
+			self.setting_duel_min_stake, self.setting_duel_max_stake,
+			self.setting_duel_accept_seconds, self.setting_duel_spectators,
 		)
 
 		self.context.signals.listen(mp_signals.map.map_begin, self.map_begin)
@@ -289,6 +412,10 @@ class BetplugginApp(AppConfig):
 
 		self.widget = BetWidget(self)
 
+		# The admin commands that cut a map short, lengthen it, or freeze it. Not a signal: there isn't
+		# one for most of them. See _install_command_hooks.
+		await self._install_command_hooks()
+
 		# Handle the map that might already be running when the app (re)starts. We can't know how much
 		# of it has already played out, so don't reopen a fresh betting window for it -- that would let
 		# players who've already seen part of the run bet with information they shouldn't have. Betting
@@ -299,6 +426,260 @@ class BetplugginApp(AppConfig):
 			await self._recover_bets_after_restart(current_map)
 		if self.widget:
 			await self.widget.display()
+
+	async def on_stop(self):
+		self._restore_command_hooks()
+
+	# ------------------------------------------------------------------
+	# Native PyPlanet commands
+	# ------------------------------------------------------------------
+
+	# The admin commands that change the shape of the period players are betting on, and what we owe
+	# them when one is used.
+	#
+	# Each entry is (command name, when to react, handler). `command` is the name PyPlanet registered
+	# in its own admin app; aliases come along for free because we hook the Command *object*, and
+	# //res, //rs, //prev, //endpause and //resume all share one object with their main name.
+	#
+	# `when` is 'before' for anything that cuts the map short -- the reaction has to be finished and
+	# the pool emptied before the map actually ends, or map_end resolves it on the way past. It is
+	# 'after' for anything whose effect we need to read back off the server (the new time limit, the
+	# fact that the game really is paused now).
+	NATIVE_COMMAND_HOOKS = (
+		# NextMap: the map stops here, whether or not it was going to have a winner.
+		('next', 'before', '_native_map_cut'),
+		('skip', 'before', '_native_map_cut'),
+		('previous', 'before', '_native_map_cut'),
+		# RestartMap: the map is played again from zero, so every time set so far is thrown away.
+		('restart', 'before', '_native_map_cut'),
+		# The map gets longer. Nothing is voided; the betting window is re-measured against the new length.
+		('extend', 'after', '_native_extend'),
+		# The game freezes but our asyncio countdown doesn't, so the window would expire during the pause.
+		('pause', 'after', '_native_pause'),
+		('unpause', 'after', '_native_unpause'),
+	)
+
+	async def _install_command_hooks(self):
+		"""
+		Make the plugin react to PyPlanet's own admin commands.
+
+		There is no signal for "an admin skipped the map". `mp_signals.map.map_start` carries a
+		`restarted` flag but arrives *after* map_end, i.e. after the pot has already been paid out, and
+		listening for the chat line misses the way admins actually skip: the admin toolbar calls
+		`command_manager.execute(player, '//skip')`, which invokes the command dispatcher directly and
+		never raises player_chat.
+
+		So we hook the one place every path passes through. `Command.handle()` checks the permission,
+		parses and validates the arguments, and only then calls `self.target(...)`. Replacing that
+		target with a wrapper catches the chat line, the toolbar button and any programmatic call in
+		one go, and fires only for an admin who is actually allowed to run the command with arguments
+		that actually parsed -- which a chat listener could never tell.
+
+		Registering our own //skip would not work: the dispatcher hands a line to the *first* matching
+		command, so ours would either shadow the real one or never be reached.
+
+		The wrapper must be `async def`: Command.handle only awaits its target if
+		`iscoroutinefunction` says it can.
+		"""
+		wanted = {name: (when, handler) for name, when, handler in self.NATIVE_COMMAND_HOOKS}
+		found = []
+
+		for command in list(self.instance.command_manager._commands):
+			if not getattr(command, 'admin', False) or getattr(command, 'namespace', None):
+				continue
+			if command.command not in wanted:
+				continue
+
+			when, handler_name = wanted[command.command]
+			original = command.target
+			command.target = self._make_command_hook(command.command, when, handler_name, original)
+			self.hooked_commands.append((command, original))
+			found.append(command.command)
+
+		missing = sorted(set(wanted) - set(found))
+		if missing:
+			# Not fatal -- the plugin works, it just won't notice those commands. Worth a line in the log
+			# because the symptom ("the pot was paid out on a skipped map") gives no hint of the cause.
+			logger.warning(
+				'BetPluggin: could not hook the native admin command(s) %s -- betting will not react to '
+				'them. Is pyplanet.apps.contrib.admin enabled, and listed before apps.betpluggin?',
+				', '.join('//{}'.format(name) for name in missing)
+			)
+
+	def _make_command_hook(self, name, when, handler_name, original):
+		async def hook(*args, **kwargs):
+			handler = getattr(self, handler_name)
+			# Logged unconditionally: "betting was called off and I don't know why" is otherwise
+			# indistinguishable from a bug, and this line is the difference.
+			logger.info('BetPluggin: reacting to //%s (%s it runs).', name, when)
+
+			if when == 'before':
+				# Never let our reaction stop the admin's command. An admin who types //skip has to get
+				# a skip even if the refunds blew up; the alternative is a server nobody can steer.
+				try:
+					await handler(name, kwargs.get('player'), kwargs.get('data'))
+				except Exception as e:
+					logger.exception('BetPluggin: reacting to //%s failed: %s', name, e)
+				return await original(*args, **kwargs)
+
+			result = await original(*args, **kwargs)
+			try:
+				await handler(name, kwargs.get('player'), kwargs.get('data'))
+			except Exception as e:
+				logger.exception('BetPluggin: reacting to //%s failed: %s', name, e)
+			return result
+
+		return hook
+
+	def _restore_command_hooks(self):
+		"""Put every wrapped target back. Leaving a closure over a dead app behind would keep firing."""
+		for command, original in self.hooked_commands:
+			command.target = original
+		self.hooked_commands = []
+
+	async def _native_map_cut(self, name, player, data=None):
+		"""
+		//skip, //next, //previous, //restart: the map stops without a result, or is about to be driven
+		again from scratch. Either way nothing that was bet on it can be settled honestly -- the times
+		on the board belong to a race that was never finished.
+
+		Refunding here rather than at map_end is what makes this ordering-independent: by the time
+		ManiaPlanet.EndMap comes back from the server the pool is already empty and the duel already
+		void, so _resolve_market walks straight past.
+		"""
+		if name == 'previous':
+			# //previous refuses to do anything in two cases, and voiding a map that then keeps playing
+			# would be worse than not reacting at all. Same two checks PyPlanet makes.
+			previous = self.instance.map_manager.previous_map
+			if not previous or previous == self.instance.map_manager.current_map:
+				return
+
+		reason = 'the map was restarted' if name == 'restart' else 'the map was skipped'
+		await self._void_period('{} by an admin'.format(reason))
+
+	async def _native_extend(self, name, player, data=None):
+		"""
+		//extend lengthens the current map (TimeAttack only). It rewrites S_TimeLimit -- the very number
+		_schedule_market_close measured the betting window against -- so without this the window silently
+		becomes a much smaller share of the map than the setting says it is.
+
+		Only the percentage window moves. "Betting is open for the first 30% of the map" is a statement
+		about the map's length and has to follow it; "betting is open for 60 seconds" is not, and an
+		extension is no reason to hand out more time than the admin asked for.
+		"""
+		async with self.lock:
+			if not self.market_is_open or self.market_closes_at is None:
+				return
+			if self.market_paused_at is not None:
+				# Frozen mid-pause; _resume_market re-arms it and will pick up the new limit then.
+				return
+
+			seconds = await self.setting_betting_window_seconds.get_value()
+			if seconds and seconds > 0:
+				return
+
+			previous_limit = self.period_time_limit
+			# The extension is applied with SetModeScriptSettings and read back with
+			# GetModeScriptSettings; give the script a moment to have taken it before asking.
+			await asyncio.sleep(1)
+			await self._schedule_market_close(anchor=self.market_opened_at)
+			new_limit = self.period_time_limit
+
+		if not previous_limit or not new_limit or new_limit <= previous_limit:
+			return
+
+		left = int(max((self.market_closes_at or 0) - time.time(), 0))
+		await self.instance.chat(
+			'{}$ff0The map was extended -- betting stays open for $fff{}$ff0 more seconds.'.format(
+				CHAT_PREFIX, left
+			)
+		)
+		await self._refresh_ui()
+
+	async def _native_pause(self, name, player, data=None):
+		await self._pause_market()
+
+	async def _native_unpause(self, name, player, data=None):
+		await self._resume_market()
+
+	async def _pause_market(self):
+		"""
+		Freeze the betting countdown for the duration of a //pause. The close is an asyncio timer and
+		has no idea the game stopped, so a long enough pause closes the market before anyone has driven
+		a metre of the map they were betting on.
+
+		market_closes_at is deliberately left where it is: the widget draws a static manialink, so with
+		the ticker cancelled the number simply stops moving on everyone's screen, which is exactly what
+		a frozen clock should look like. _resume_market pushes it forward by however long the pause was.
+		"""
+		async with self.lock:
+			if self.market_paused_at is not None:
+				return
+			if not self.market_is_open or self.market_closes_at is None:
+				return
+			self.market_paused_at = time.time()
+			self._cancel_market_close(keep_deadline=True)
+
+		await self.instance.chat(
+			'{}$ff0Match paused -- the betting countdown is on hold.'.format(CHAT_PREFIX)
+		)
+		await self._refresh_ui()
+
+	async def _resume_market(self):
+		async with self.lock:
+			paused_at, self.market_paused_at = self.market_paused_at, None
+			if paused_at is None or self.market_closes_at is None:
+				return
+			if not self.market_is_open:
+				return
+
+			self.market_closes_at += time.time() - paused_at
+			remaining = self.market_closes_at - time.time()
+			self.market_close_task = asyncio.ensure_future(self._close_market_after(remaining))
+			self.market_tick_task = asyncio.ensure_future(self._tick_market_countdown())
+
+		await self.instance.chat(
+			'{}$ff0Match resumed -- $fff{}$ff0 seconds left to bet.'.format(CHAT_PREFIX, int(max(remaining, 0)))
+		)
+		await self._refresh_ui()
+
+	async def _void_period(self, reason):
+		"""
+		Call off the whole period: every confirmed stake goes back to the player who made it, and any
+		duel -- offered, half-paid or running -- is called off too.
+
+		This is not a resolution. Nobody wins, nobody loses, and nothing is written to anyone's record:
+		each bet is closed with won=None, the same marker _resolve_market uses for a refund, which
+		get_leaderboard skips outright so a skipped map never dents a streak.
+		"""
+		async with self.lock:
+			self._cancel_market_close()
+			bets = self.current_bets
+			self.current_bets = []
+			self.market_open = False
+			self.market_manually_closed = False
+			# Same as _resolve_market: this pool is gone, so a stake confirming a second from now has
+			# nothing left to join and is refunded by _handle_stake_bill instead.
+			self.market_closed_at = None
+
+		await self.duels.void(reason)
+
+		if bets:
+			total = sum(bet['amount'] for bet in bets)
+			for bet in bets:
+				bet['bet'].won = None
+				bet['bet'].payout = 0
+				bet['bet'].state = Bet.STATE_RESOLVED
+				await bet['bet'].save()
+				await self._refund(bet['player'], bet['amount'], 'Betting was called off: {}.'.format(reason))
+
+			await self.instance.chat(
+				'{}$ff0Betting is off: {}. All {} planets from {} have been refunded.'.format(
+					CHAT_PREFIX, reason, total, plural(len(bets), 'bet')
+				)
+			)
+
+		await self._refresh_ui()
 
 	# ------------------------------------------------------------------
 	# Market lifecycle
@@ -512,6 +893,9 @@ class BetplugginApp(AppConfig):
 		self.market_open = True
 		self.closed_for_reboot = False
 		self.market_closed_at = None
+		self.market_opened_at = time.time()
+		# A pause that was never ended before the period turned over must not freeze the new one.
+		self.market_paused_at = None
 		# Always a fresh slot: whatever `scores` the warmup produced says nothing about who wins the
 		# map now starting, and resolving against it would hand the pot to the wrong driver.
 		self.scores_slot = dict(scores=None, event=asyncio.Event())
@@ -520,10 +904,17 @@ class BetplugginApp(AppConfig):
 		else:
 			self._cancel_market_close()
 
-	def _cancel_market_close(self):
-		"""Drop the pending auto-close, if any. Safe to call when there isn't one."""
+	def _cancel_market_close(self, keep_deadline=False):
+		"""
+		Drop the pending auto-close, if any. Safe to call when there isn't one.
+
+		:param keep_deadline: leave market_closes_at standing. Only _pause_market wants this: the
+			deadline is still the truth about this window, it just isn't counting for the moment, and
+			clearing it would blank the timer on every player's widget mid-pause.
+		"""
 		task, self.market_close_task = self.market_close_task, None
-		self.market_closes_at = None
+		if not keep_deadline:
+			self.market_closes_at = None
 		if task and not task.done():
 			task.cancel()
 
@@ -561,11 +952,20 @@ class BetplugginApp(AppConfig):
 			return None
 		return limit
 
-	async def _schedule_market_close(self):
-		"""Arm the auto-close for the period being opened. Must be called while holding self.lock."""
+	async def _schedule_market_close(self, anchor=None):
+		"""
+		Arm the auto-close for the period being opened. Must be called while holding self.lock.
+
+		:param anchor: the moment the window is measured from, defaulting to now. //extend passes the
+			time the market actually opened, so re-measuring the window against the map's new length
+			lands it where it would have been had the map always been that long -- rather than
+			restarting the whole window from the moment the admin typed the command.
+		"""
 		self._cancel_market_close()
 
 		limit = await self._period_time_limit()
+		# Remembered so //extend can tell how much longer the map just got.
+		self.period_time_limit = limit
 
 		# An explicit duration in seconds wins over the percentage. It's the setting an admin can reason
 		# about without first working out what S_TimeLimit currently is ("betting is open for the first
@@ -587,9 +987,13 @@ class BetplugginApp(AppConfig):
 			delay = limit * percent / 100
 
 		# Remembered so the widget and the market window can show how long is left.
-		self.market_closes_at = time.time() + delay
+		self.market_closes_at = (anchor if anchor is not None else time.time()) + delay
+		# What is left to wait is not the same as the window's length once the anchor is in the past
+		# (//extend). Clamped at zero: a window that has already run out closes on the next tick of the
+		# loop rather than being scheduled for a moment that has been and gone.
+		remaining = max(self.market_closes_at - time.time(), 0)
 		# Fire and forget: this sleeps for most of the map, and _open_market is on the map_begin path.
-		self.market_close_task = asyncio.ensure_future(self._close_market_after(delay))
+		self.market_close_task = asyncio.ensure_future(self._close_market_after(remaining))
 		self.market_tick_task = asyncio.ensure_future(self._tick_market_countdown())
 
 	# How often the countdown is redrawn, as (seconds still left, seconds between redraws). Read in order,
@@ -637,7 +1041,10 @@ class BetplugginApp(AppConfig):
 		warning = min(await self.setting_closing_warning.get_value(), delay)
 
 		await asyncio.sleep(max(delay - warning, 0))
-		if self.market_is_open:
+		# "closes in 0 seconds" is not a warning, it's noise -- and it's what a window with nothing left
+		# in it would announce (a re-armed close whose deadline has already passed, see
+		# _schedule_market_close). Skip straight to the close in that case.
+		if warning >= 1 and self.market_is_open:
 			await self.instance.chat(
 				'{}$ff0Betting closes in $fff{}$ff0 seconds -- last chance to place your bet!'.format(
 					CHAT_PREFIX, int(warning)
@@ -710,7 +1117,9 @@ class BetplugginApp(AppConfig):
 			self.market_closed_at = None
 			slot = self.scores_slot
 
-		if not bets:
+		# A duel is settled here too, so an empty market is not on its own a reason to stop: there may be
+		# no market bets at all and still two players with real planets riding on each other.
+		if not bets and self.duels.duel is None:
 			await self._refresh_ui()
 			return
 
@@ -729,6 +1138,17 @@ class BetplugginApp(AppConfig):
 				)
 
 		last_scores = slot['scores'] if slot else None
+
+		# The duel reads the *same* payload as the market, and reads it here rather than from its own
+		# signal handler: two separate reads can land either side of the next map's scores arriving, and
+		# a duel decided on a different standing than the market it was played alongside would be
+		# impossible to explain to the two players it just cost planets.
+		await self.duels.resolve(last_scores, by_map_points)
+
+		if not bets:
+			await self._refresh_ui()
+			return
+
 		if by_map_points:
 			winner_login = self.determine_map_winner_login(last_scores)
 			# Phrasing matters here: on a Rounds map the driver who crosses the line first in the final
@@ -806,11 +1226,16 @@ class BetplugginApp(AppConfig):
 			await self._refresh_ui()
 			return
 
-		# Per-login context for the podium result card, built as we go so the card shows exactly the
-		# numbers the player was told in chat.
-		cards = {}
-		settled = []
-
+		# Bettors, not stakes. One player may hold up to MAX_BETS_PER_PERIOD stakes on their driver, and
+		# every line written below used to be per stake: three "You WON" messages for a single win, and a
+		# public "3 bet(s)" that reads as three people when it was one player reinforcing three times.
+		# Everything a player reads is grouped from here on; the payments stay per stake, because that is
+		# what the ledger rows are and what the odds were quoted against.
+		#
+		# Grouped by (player, driver) rather than by player alone: one driver per period is a rule of
+		# place_bet(), not an invariant this method can rely on -- an admin bet or a future mode could
+		# break it, and a merged line would then claim a win and a loss at once.
+		groups = OrderedDict()
 		for bet in bets:
 			won = bet in winning_bets
 			payout = 0
@@ -819,89 +1244,134 @@ class BetplugginApp(AppConfig):
 
 			# Pari-mutuel: the odds quoted when the bet was placed are only indicative, since later bets
 			# move the pot. Report what the stake *actually* returned, not the stale quote.
-			effective_odds = (payout / bet['amount']) if (won and bet['amount'] > 0) else 0
 			profit = payout - bet['amount']
+			key = (bet['player'].login, bet['target_login'].lower())
+			groups.setdefault(key, []).append(
+				dict(bet=bet, won=won, payout=payout, profit=profit)
+			)
 
-			if won:
-				# Tell them they won *before* sending the money. The payment confirmation arrives
-				# asynchronously seconds later and, on its own, is indistinguishable from a refund.
+		# Heads, and stakes. Everything public counts heads; the stake count only ever appears next to it
+		# as a parenthesis, so the two can no longer be mistaken for one another.
+		stake_count = len(bets)
+		bettor_count = len({bet['player'].login for bet in bets})
+		winning_bettors = len({bet['player'].login for bet in winning_bets})
+
+		# Announce before paying: the payment confirmation arrives asynchronously seconds later and, on
+		# its own, is indistinguishable from a refund. Both passes run over the same `groups`, so nothing
+		# said here can disagree with what is paid below.
+		for (_, target_login), group in groups.items():
+			player = group[0]['bet']['player']
+			staked = sum(entry['bet']['amount'] for entry in group)
+			# "over 3 bets" only when there were several. Saying it every time turns the normal case into
+			# a line about bookkeeping.
+			spread = ' over {} bets'.format(len(group)) if len(group) > 1 else ''
+
+			if group[0]['won']:
+				payout = sum(entry['payout'] for entry in group)
 				await self._safe_chat(
-					'{}$0f0You WON {}! $fff{}$0f0 {}. Your $fff{}$0f0 planets x $fff{}$0f0 '
+					'{}$0f0You WON {}! $fff{}$0f0 {}. Your $fff{}$0f0 planets{} x $fff{}$0f0 '
 					'give back $fff{}$0f0 planets $0f0(you gain $fff+{}$0f0). Payment on its way.'.format(
-						CHAT_PREFIX, period_label, winner_label, win_reason, bet['amount'],
-						self.format_odds(effective_odds), payout, profit
+						CHAT_PREFIX, period_label, winner_label, win_reason, staked, spread,
+						self.format_odds(payout / staked if staked else 0), payout, payout - staked
 					),
-					bet['player']
+					player
 				)
 			else:
 				await self._safe_chat(
-					'{}$f00You lost {}. You bet on $fff{}$f00, but $fff{}$f00 {}. '
-					'$fff-{}$f00 planets.'.format(
-						CHAT_PREFIX, period_label, self.display_name(bet['target_login']), winner_label,
-						win_reason, bet['amount']
+					'{}$f00You lost {}. You bet $fff{}$f00 planets{} on $fff{}$f00, but $fff{}$f00 {}.'.format(
+						CHAT_PREFIX, period_label, staked, spread, self.display_name(target_login),
+						winner_label, win_reason
 					),
-					bet['player']
+					player
 				)
 
-			payout_bill_id = None
-			if won and payout > 0:
-				# Pay *before* recording the result. Writing won/payout first and only then discovering
-				# the server can't afford it left the database -- and therefore the leaderboard --
-				# claiming a payout that never actually arrived.
-				payout_bill_id, server_planets = await self._pay_out(bet['player'], payout, server_planets)
-				if payout_bill_id is None:
-					# They still won; we just owe them. payout=0 keeps the ledger honest so an admin can
-					# find the debt (won=True with payout=0) instead of it vanishing into the stats.
-					payout = 0
+		# Per-login context for the podium result card, built as we go so the card shows exactly the
+		# numbers the player was told in chat.
+		cards = {}
+		settled = []
 
-			bet['bet'].state = Bet.STATE_RESOLVED
-			bet['bet'].won = won
-			bet['bet'].payout = payout
-			bet['bet'].payout_bill_id = payout_bill_id
-			await bet['bet'].save()
+		for (_, target_login), group in groups.items():
+			for entry in group:
+				bet, won, payout = entry['bet'], entry['won'], entry['payout']
 
-			settled.append(dict(bet=bet, won=won, payout=payout, profit=profit))
+				payout_bill_id = None
+				if won and payout > 0:
+					# Pay *before* recording the result. Writing won/payout first and only then discovering
+					# the server can't afford it left the database -- and therefore the leaderboard --
+					# claiming a payout that never actually arrived.
+					payout_bill_id, server_planets = await self._pay_out(bet['player'], payout, server_planets)
+					if payout_bill_id is None:
+						# They still won; we just owe them. payout=0 keeps the ledger honest so an admin can
+						# find the debt (won=True with payout=0) instead of it vanishing into the stats.
+						payout = 0
+						entry['payout'] = 0
+						entry['profit'] = -bet['amount']
 
-			# One card per player. A player can hold several stakes in a period (all on the same driver,
-			# see MAX_BETS_PER_PERIOD) and the card only has room for one line, so the last one written
-			# takes the slot -- they all share the same outcome anyway.
-			existing = cards.get(bet['player'].login)
+				bet['bet'].state = Bet.STATE_RESOLVED
+				bet['bet'].won = won
+				bet['bet'].payout = payout
+				bet['bet'].payout_bill_id = payout_bill_id
+				await bet['bet'].save()
+
+			# One card per player, and the card adds the group up rather than showing whichever stake was
+			# written last: "Your bet: 100" under a +900 result, when the player had staked 300 over three
+			# bets, is the same confusion as the public line counting stakes as people.
+			player = group[0]['bet']['player']
+			won = group[0]['won']
+			staked = sum(entry['bet']['amount'] for entry in group)
+			paid = sum(entry['payout'] for entry in group)
+			profit = paid - staked
+			spread = ' over {} bets'.format(len(group)) if len(group) > 1 else ''
+
+			settled.append(dict(player=player, won=won, staked=staked, payout=paid, profit=profit))
+
+			existing = cards.get(player.login)
 			if existing is None or (won and not existing['_won']):
-				cards[bet['player'].login] = dict(
+				cards[player.login] = dict(
 					_won=won,
 					accent='73FF51FF' if won else 'FF7B7BFF',
 					headline='YOU WON' if won else 'YOU LOST',
 					winner_line='$fff{}$z winner: {}'.format(period_label.capitalize(), winner_label),
-					stake_line='Your bet: {} on {}'.format(
-						bet['amount'], self.display_name(bet['target_login'])
+					stake_line='Your bet: {}{} on {}'.format(
+						staked, spread, self.display_name(target_login)
 					),
 					result_line=(
-						'+{} planets  (x{})'.format(profit, self.format_odds(effective_odds)) if won
-						else '-{} planets'.format(bet['amount'])
+						'+{} planets  (x{})'.format(
+							profit, self.format_odds(paid / staked if staked else 0)
+						) if won else '-{} planets'.format(staked)
 					),
 					footer_line=(
-						'From {} planets played, shared by {} winner(s).'.format(total_pot, len(winning_bets))
-						if won else '{} planets played over {} bet(s).'.format(total_pot, len(bets))
+						'From {} planets played, shared by {}.'.format(
+							total_pot, plural(winning_bettors, 'winner')
+						)
+						if won else '{} planets played by {}.'.format(
+							total_pot, plural(bettor_count, 'player')
+						)
 					),
 				)
 
 		# Public line: nickname (not login), and who actually cashed in -- the old version announced the
-		# race winner and left everyone guessing whether anyone had backed them.
+		# race winner and left everyone guessing whether anyone had backed them. One entry per player, so
+		# a player who reinforced three times appears once, with the three stakes added up.
 		top_winners = sorted(
 			(s for s in settled if s['won']), key=lambda s: s['profit'], reverse=True
 		)[:3]
 		if top_winners:
 			payout_summary = 'Winners: {}.'.format(', '.join(
 				'$fff{}$ff0 $0f0+{}$ff0'.format(
-					s['bet']['player'].nickname or s['bet']['player'].login, s['profit']
+					s['player'].nickname or s['player'].login, s['profit']
 				) for s in top_winners
 			))
 		else:
 			payout_summary = '$f00Nobody bet on them -- no winner this time.'
 
+		# Players first, stakes only as a parenthesis and only when the two differ. "3 bets" alone was
+		# read as three people every time one player had reinforced.
 		await self.instance.chat(
-			'{}$ff0{} won {}! $fff{}$ff0 planets played over $fff{}$ff0 bet(s). {}'.format(
-				CHAT_PREFIX, winner_label, period_label, total_pot, len(bets), payout_summary
+			'{}$ff0{} won {}! $fff{}$ff0 planets from $fff{}$ff0{}. {}'.format(
+				CHAT_PREFIX, winner_label, period_label, total_pot, plural(bettor_count, 'player'),
+				' $aaa({} bets)$ff0'.format(stake_count) if stake_count != bettor_count else '',
+				payout_summary
 			)
 		)
 
@@ -932,9 +1402,13 @@ class BetplugginApp(AppConfig):
 
 		ranked = sorted(
 			(p for p in last_scores.get('players', []) if p.get('player')),
-			# Points first, then the mode's own ranking as the tie-break: on an exact tie that is the
-			# order the in-game scoreboard shows, so the payout matches what the players just watched.
-			key=lambda p: (-(p.get('map_points') or 0), p.get('rank') or 9999)
+			# Points first, then the driven time as the tie-break. Not `rank`: the mode ranks every
+			# connected player whether they drove or not, so it cannot separate two drivers on equal
+			# points -- it would just prefer whichever of them the server listed first.
+			key=lambda p: (
+				-(p.get('map_points') or 0),
+				p['best_race_time'] if (p.get('best_race_time') or 0) > 0 else 9999999,
+			)
 		)
 		if not ranked:
 			return None
@@ -956,20 +1430,27 @@ class BetplugginApp(AppConfig):
 		if not last_scores:
 			return None
 
+		# Only drivers with a time on the board. `rank` is not the test it looks like: the mode ranks
+		# every connected player, so on a map nobody finishes they all come back ranked 1, 2, 3 and the
+		# first of them was being paid out as the winner of a race that had no winner. A driven time is
+		# the only thing that proves a result, so the ordering is done on the time itself.
+		finished = sorted(
+			(
+				p for p in last_scores.get('players', [])
+				if p.get('player') and p.get('best_race_time') is not None and p['best_race_time'] > 0
+			),
+			key=lambda p: p['best_race_time']
+		)
+		if not finished:
+			# Nobody drove a time. Callers refund on None, which is the right answer here.
+			return None
+
+		# The mode's own winner, but only once we know somebody actually finished -- it is reported even
+		# on a map that ended in a draw.
 		if last_scores.get('winner_player'):
 			return last_scores['winner_player']
 
-		# `rank` is 0 for players the mode hasn't ranked (no time driven, joined late). Compare against
-		# None explicitly rather than testing truthiness, so an unranked 0 is skipped without also
-		# skipping a legitimately-ranked player should a mode ever start counting from 0.
-		ranked = sorted(
-			(p for p in last_scores.get('players', []) if p.get('rank') is not None and p['rank'] > 0),
-			key=lambda p: p['rank']
-		)
-		if ranked:
-			return ranked[0]['player'].login
-
-		return None
+		return finished[0]['player'].login
 
 	async def player_connect(self, player, is_spectator, source, signal, **kwargs):
 		if self.widget:
@@ -1062,6 +1543,11 @@ class BetplugginApp(AppConfig):
 	async def on_bill_updated(self, bill_id, state, state_name, transaction_id, **kwargs):
 		if bill_id in self.pending_stakes:
 			await self._handle_stake_bill(bill_id, state)
+		elif self.duels.handles_bill(bill_id):
+			# Duel stakes are tracked in their own dict rather than pending_stakes: the market's settlement
+			# checks the market's own period and would throw away a duel stake for reasons that have
+			# nothing to do with the duel.
+			await self.duels.on_bill(bill_id, state)
 		elif bill_id in self.pending_payouts:
 			await self._handle_payout_bill(bill_id, state)
 
@@ -1463,17 +1949,38 @@ class BetplugginApp(AppConfig):
 			Bet.select(Bet, Player).join(Player).where(Bet.state == Bet.STATE_RESOLVED).order_by(Bet.id)
 		)
 
+		def new_entry(login):
+			return dict(
+				login=login, backed=0, wins=0, staked=0, returned=0,
+				odds_sum=0.0, odds_count=0, title='',
+				duels=0, duel_wins=0, duel_losses=0, duel_draws=0, duel_net=0,
+			)
+
 		stats = {}
 		for bet in rows:
+			key = bet.target_login.lower()
+
+			# Duel record. A duellist's own stake (TYPE_DUEL) is the one row per duel that names its
+			# outcome, so it is the only thing counted here -- spectator bets on the same duel would
+			# otherwise multiply one result by however many people had an opinion about it. Draws are
+			# counted too, unlike the backing stats below, because "never lost a duel" is only worth
+			# anything if the maps that ended level are on the same board.
+			if bet.bet_type == Bet.TYPE_DUEL:
+				entry = stats.setdefault(key, new_entry(bet.target_login))
+				entry['duels'] += 1
+				if bet.won:
+					entry['duel_wins'] += 1
+				elif bet.won is None:
+					entry['duel_draws'] += 1
+				else:
+					entry['duel_losses'] += 1
+				entry['duel_net'] += (bet.payout or 0) - bet.amount
+
 			if bet.won is None:
 				# Refunded period -- the target neither won nor lost anyone their money.
 				continue
 
-			key = bet.target_login.lower()
-			entry = stats.setdefault(key, dict(
-				login=bet.target_login, backed=0, wins=0, staked=0, returned=0,
-				odds_sum=0.0, odds_count=0, title='',
-			))
+			entry = stats.setdefault(key, new_entry(bet.target_login))
 			entry['backed'] += 1
 			entry['staked'] += bet.amount
 			entry['returned'] += (bet.payout or 0)
@@ -1505,12 +2012,33 @@ class BetplugginApp(AppConfig):
 			)
 			entry['win_rate'] = round((entry['wins'] / entry['backed']) * 100, 1) if entry['backed'] else 0
 			entry['avg_odds'] = round(entry['odds_sum'] / entry['odds_count'], 2) if entry['odds_count'] else None
+			# Draws are in the denominator on purpose: a duel you did not win is a duel you did not win,
+			# and letting people quietly drop them would make a 1-win 9-draw record read as 100%.
+			entry['duel_win_rate'] = (
+				round((entry['duel_wins'] / entry['duels']) * 100, 1) if entry['duels'] else 0
+			)
 			# What backing this player has been worth overall. Negative means the crowd lost money on them.
 			entry['net'] = entry['returned'] - entry['staked']
 
 		targets.sort(key=lambda e: (e['backed'], e['staked']), reverse=True)
 		self._assign_titles(targets)
 		return targets
+
+	async def get_duel_stats(self):
+		"""
+		The duel record board: everyone who has ever finished a duel, best record first.
+
+		Derived from get_target_stats() rather than from its own query, because the counting rule for
+		"is this row a duel result" is subtle enough (one row per duel, the duellist's own stake, draws
+		included) that having it written twice is how the two boards start disagreeing.
+
+		Sorted on wins first and win rate second, not on planets. This is the board a player points at,
+		and a record should be beaten by winning more duels -- not by winning the same number for higher
+		stakes, which would just mean the richest player is permanently on top.
+		"""
+		duellists = [e for e in await self.get_target_stats() if e['duels'] > 0]
+		duellists.sort(key=lambda e: (e['duel_wins'], e['duel_win_rate'], e['duel_net']), reverse=True)
+		return duellists
 
 	# A title is only awarded once a player has been backed this many times. Below that the numbers say
 	# more about who happened to be online than about the player, and handing out "Underdog" on a single
@@ -1593,6 +2121,59 @@ class BetplugginApp(AppConfig):
 		ok, message = await self.place_bet(player, data.login, data.amount)
 		color = '$ff0' if ok else '$f00'
 		await self.instance.chat('{}{}'.format(color, message), player)
+
+	async def chat_duel(self, player, data, **kwargs):
+		# "/duel list" as well as "/duels", because the board is the kind of thing you go looking for
+		# from the command you already know rather than from one you have to be told about.
+		if data.login and data.login.lower() in ('list', 'top', 'board', 'classement'):
+			await self.chat_duel_board(player)
+			return
+
+		if not data.login or not data.amount:
+			others = [p.login for p in self.instance.player_manager.online if p.login != player.login]
+			example = others[0] if others else 'PlayerName'
+			await self.instance.chat(
+				'$i$f00Usage: $fff/duel <login> <amount>$f00 -- e.g. $fff/duel {} 500$f00. They can refuse, '
+				'or take it for more or less than you put up. Whoever finishes ahead takes the lot.'.format(example),
+				player
+			)
+			return
+
+		await self.duels.challenge(player, data.login, data.amount)
+
+	async def chat_duel_accept(self, player, data, **kwargs):
+		duel = self.duels.duel
+		if not duel:
+			await self.instance.chat('$f00Nobody has challenged you.', player)
+			return
+
+		# No amount given means "same as yours", which is the answer most people mean and the one they
+		# will type fastest -- and speed matters, there is a countdown running.
+		amount = data.amount if data.amount else duel['challenger_amount']
+		await self.duels.accept(player, amount)
+
+	async def chat_duel_decline(self, player, **kwargs):
+		if not self.duels.duel:
+			await self.instance.chat('$f00Nobody has challenged you.', player)
+			return
+		await self.duels.decline(player)
+
+	async def chat_duel_bet(self, player, data, **kwargs):
+		if not self.duels.is_active:
+			await self.instance.chat('$f00There is no duel running right now. Start one with $fff/duel$f00.', player)
+			return
+
+		duel = self.duels.duel
+		if not data.login or not data.amount:
+			await self.instance.chat(
+				'$i$f00Usage: $fff/duelbet <login> <amount>$f00 -- back $fff{}$f00 or $fff{}$f00.'.format(
+					duel['challenger'].login, duel['opponent'].login
+				),
+				player
+			)
+			return
+
+		await self.duels.back_side(player, data.login, data.amount)
 
 	async def chat_open_market(self, player, **kwargs):
 		if not self.market_is_open:
@@ -1694,6 +2275,17 @@ class BetplugginApp(AppConfig):
 		view = BetLeaderboardView(self)
 		await view.display(player=player)
 
+	async def chat_duel_board(self, player, **kwargs):
+		if not await self.get_duel_stats():
+			await self.instance.chat(
+				'{}$aaaNo duel has been settled yet -- challenge someone with $fff/duel <login> <amount>$aaa '
+				'and be the first name on the board.'.format(CHAT_PREFIX),
+				player
+			)
+			return
+		view = BetDuelBoardView(self)
+		await view.display(player=player)
+
 	async def chat_targets(self, player, **kwargs):
 		if not await self.get_target_stats():
 			await self.instance.chat(
@@ -1748,9 +2340,19 @@ class BetplugginApp(AppConfig):
 		await self.instance.chat('$fff/wallet$ff0 (or /stats, /betstats) - Show your betting history and stats.', player)
 		await self.instance.chat('$fff/bettop$ff0 (or /betladder) - Open the all-time betting leaderboard.', player)
 		await self.instance.chat('$fff/bettargets$ff0 (or /targets, /cotes) - Who is worth betting on: past wins, usual multiplier and badges.', player)
+		await self.instance.chat('$fff/duel <login> <amount>$ff0 - Challenge a player: whoever finishes ahead takes the stake. Also from the $fffDuel$ff0 button in /betmarket.', player)
+		await self.instance.chat('$fff/accept <amount>$ff0 - Accept the duel you were challenged to (or use the popup window).', player)
+		await self.instance.chat('$fff/decline$ff0 (or /refuse) - Turn down the duel you were challenged to. Nothing is charged.', player)
+		await self.instance.chat('$fff/duelbet <login> <amount>$ff0 (or /back) - Back one of the two players in the running duel. One-click buttons appear on the widget while a duel runs.', player)
+		await self.instance.chat('$fff/duels$ff0 (or /duel list, /dueltop) - The duel record board: who has won the most duels here.', player)
 
 	async def chat_help_admin(self, player, **kwargs):
 		await self.instance.chat('$ff0--- BetPluggin Admin Commands ---', player)
 		await self.instance.chat('$fff//bet open$ff0 - Force-open betting for the current period.', player)
 		await self.instance.chat('$fff//bet close$ff0 - Close betting for the current period early.', player)
 		await self.instance.chat('$fff//bet help$ff0 - Show this admin command list.', player)
+		await self.instance.chat('$ff0--- PyPlanet commands betting reacts to on its own ---', player)
+		await self.instance.chat('$fff//skip$ff0, $fff//next$ff0, $fff//previous$ff0, $fff//restart$ff0 - Betting is called off and everyone is refunded: the map has no honest winner.', player)
+		await self.instance.chat('$fff//extend$ff0 - The betting window is re-measured against the map\'s new length (percentage windows only).', player)
+		await self.instance.chat('$fff//pause$ff0 / $fff//unpause$ff0 - The betting countdown is frozen and resumed with it.', player)
+		await self.instance.chat('$fff//endwu$ff0 - Already closes betting in round-based modes, as the end of the warmup always does.', player)

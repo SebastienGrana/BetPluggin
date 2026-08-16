@@ -118,7 +118,23 @@
             {% endif %}
           {% endfor %}
 
+          <!-- BetPluggin: per-ROW button state. Upstream styles action buttons per column, so every row
+               gets the same colour; the betting rules here are per row (one driver per period, a capped
+               number of stakes on them, a cumulative maximum), which means most rows are unclickable most
+               of the time and looked exactly like the one row that wasn't. A row sets `_locked`, or caps
+               what it can still take with `_room`, and the buttons that could only be refused are drawn
+               dead. They stay wired up on purpose: clicking one still returns the sentence saying why.
+               Views that set neither key are unaffected -- both lookups fall back to "not locked".
+
+               `action.lock_key` lets an action opt into a *different* row flag than the betting one --
+               the market row's "Duel" button is dead for its own reasons (a duel already running, the
+               row being yourself) that have nothing to do with `_locked`/`_room`, so it reads
+               `_duel_locked` instead. Actions that don't set it keep using `_locked`/`_room` as before. -->
+          {% set row_locked = row['_locked']|default(false) %}
+          {% set row_room = row['_room']|default(0) %}
           {% for action in actions %}
+            {% set row_lock = row[action.lock_key]|default(false) if action.lock_key else row_locked %}
+            {% set dead = action.locked_bgcolor and (row_lock or (action.amount and action.amount > row_room)) %}
             {% if action.type == 'quad' %}
               <quad pos="{{ 218 - actions_width + action.left }} 0" size="{{ action.width|default(5, True) }} 5" style="{{ action.style }}" substyle="{{ action.substyle }}"
                     {% if action.attrs %}{{ action.attrs|safe }}{% endif %}
@@ -133,12 +149,12 @@
                    separate things, and sits under the label so the label keeps handling the click. -->
               {% if action.bgcolor %}
                 <quad pos="{{ 218 - actions_width + action.left + 0.5 }} -0.35" size="{{ action.width|default(5, True) - 2 }} 4.3"
-                      z-index="-1" bgcolor="{{ action.bgcolor }}"/>
+                      z-index="-1" bgcolor="{% if dead %}{{ action.locked_bgcolor }}{% else %}{{ action.bgcolor }}{% endif %}"/>
               {% endif %}
               <label pos="{{ 218 - actions_width + action.left + (action.width|default(5, True) / 2) - 0.5 }} -2.5" size="{{ action.width|default(5, True) }} 5"
                      {% if action.style %}style="{{ action.style }}"{% endif %} {% if action.substyle %}substyle="{{ action.substyle }}"{% endif %}
                      {% if action.attrs %}{{ action.attrs|safe }}{% endif %}
-                     {% if action.safe %} text="$fff{{ action.text|safe }}" {% else %} text="{{ action.text }}" {% endif %}
+                     {% if action.safe %} text="{% if dead %}$888{% else %}$fff{% endif %}{{ action.text|safe }}" {% else %} text="{{ action.text }}" {% endif %}
                      focusareacolor1="0000" focusareacolor2="fff2"
                      textsize="{{ action.textsize|default('1.2', True) }}"
                      halign="center" valign="center2"

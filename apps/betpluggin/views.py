@@ -6,12 +6,72 @@ all-time player leaderboard).
 import asyncio
 import time
 
-from pyplanet.views.generics.alert import ask_input
+from collections import OrderedDict
+
+from pyplanet.views.generics.alert import PromptView
 from pyplanet.views.generics.list import ManualListView
 from pyplanet.views.generics.widget import WidgetView
 from pyplanet.views.template import TemplateView
 
 from .models import Bet
+
+
+class CancellablePromptView(PromptView):
+	"""
+	A PromptView whose second button backs out instead of submitting.
+
+	PyPlanet's own PromptView.handle() never looks at *which* button was pressed: whatever you click, it
+	validates the input box and returns it. So an amount prompt built on the stock ask_input() has
+	exactly one way out -- type a valid number -- and a player who opened it by mistake, or changed
+	their mind about the opponent, is stuck staking money to close a window.
+	"""
+
+	CANCEL_INDEX = 1
+
+	async def handle(self, player, action, values, **kwargs):
+		if action.endswith('button_{}'.format(self.CANCEL_INDEX)):
+			await self.close(player)
+			if not self.response_future.done():
+				self.response_future.set_result(None)
+			return
+		await super().handle(player, action, values, **kwargs)
+
+
+async def ask_amount(player, message, default=None, size='md'):
+	"""
+	Ask for a number with a working Cancel button. Returns None when the player backs out.
+
+	PromptView's sizes are hard-coded and centred, so this box always lands over the driving view. Pass
+	size='sm' when the question is asked mid-race: it is the smallest footprint on offer, and the
+	player still has Cancel to get the road back in one click.
+	"""
+	view = CancellablePromptView(message, size, [{'name': 'OK'}, {'name': 'Cancel'}], default=default)
+	await view.display(player_logins=[player.login])
+	return await view.wait_for_input()
+
+
+# Handed out by position on the duel board, not by threshold: a title you can only get by being ahead
+# of everyone else is a title somebody has to lose for you to take it, which is the whole point.
+DUEL_TITLES = {
+	1: '$ff0Duel king',
+	2: '$dddChallenger',
+	3: '$e79Third blood',
+}
+
+
+def format_duel_record(entry):
+	"""
+	One player's duel record as a single cell: "3 of 5". Empty for anyone who has never duelled.
+
+	Empty rather than "0 of 0", because a column full of zeroes on a board most players are on for
+	their betting reads as everyone having lost, which is the opposite of what it says.
+	"""
+	if not entry.get('duels'):
+		return ''
+	wins = entry['duel_wins']
+	return '{} of {}'.format(
+		'$0f0{}$z'.format(wins) if wins else '$aaa0$z', entry['duels']
+	)
 
 
 def format_time_left(closes_at):
@@ -54,6 +114,9 @@ class BetListStyleMixin:
 		'blue': dict(tint='2F6FE012', header='2F6FE01E', line='9CC8FFDD', button='2F6FE0FF'),
 		'green': dict(tint='2FC06A12', header='2FC06A1E', line='A8F0BEDD', button='2E9E58FF'),
 		'gold': dict(tint='E0A93012', header='E0A9301E', line='FFDF9CDD', button='C9891AFF'),
+		# The duel orange, the same one the challenge window and the widget's duel band already use, so
+		# the record board is visibly part of the duel and not a fifth unrelated statistics window.
+		'orange': dict(tint='F08A2E12', header='F08A2E1E', line='FFD2A8DD', button='F08A2EFF'),
 	}
 
 	template_name = 'betpluggin/list.xml'
@@ -108,6 +171,9 @@ class BetNavMixin:
 		async def to_leaderboard(player, values, view=None, **kwargs):
 			await self._nav_to(player, BetLeaderboardView)
 
+		async def to_duels(player, values, view=None, **kwargs):
+			await self._nav_to(player, BetDuelBoardView)
+
 		async def to_wallet(player, values, view=None, **kwargs):
 			# Answers in chat, so the window is closed rather than swapped -- otherwise the reply lands
 			# behind the list the player is still staring at.
@@ -122,6 +188,7 @@ class BetNavMixin:
 			('market', 'Market', 20, accents['blue']['button'], to_market),
 			('targets', 'Who to bet on', 26, accents['green']['button'], to_targets),
 			('leaderboard', 'Leaderboard', 24, accents['gold']['button'], to_leaderboard),
+			('duels', 'Duel record', 22, accents['orange']['button'], to_duels),
 			('wallet', 'My stats', 20, '55555FFF', to_wallet),
 		]
 		return [
@@ -148,7 +215,11 @@ class BetWidget(WidgetView):
 
 	z_index = 130
 	size_x = 40
-	size_y = 15.5
+	size_y = 21.8
+	# What the widget grows to while a duel is on the table. The band is only worth its screen space for
+	# the minute or two a duel lasts, so it is added and removed rather than left empty the rest of the
+	# time -- and a duel that appears under the widget you are already watching does not need finding.
+	DUEL_BAND_HEIGHT = 14.2
 
 	template_name = 'betpluggin/widget.xml'
 
@@ -162,6 +233,8 @@ class BetWidget(WidgetView):
 		self.subscribe('open_targets', self.action_open_targets)
 		self.subscribe('open_leaderboard', self.action_open_leaderboard)
 		self.subscribe('open_wallet', self.action_open_wallet)
+		self.subscribe('back_challenger', self.action_back_challenger)
+		self.subscribe('back_opponent', self.action_back_opponent)
 
 	async def get_context_data(self):
 		# Positioned per mode, not once at class level: the scope is only known from map_begin onwards
@@ -173,6 +246,10 @@ class BetWidget(WidgetView):
 		else:
 			self.widget_x = type(self).widget_x
 			self.widget_y = type(self).widget_y
+
+		# Same reasoning as the coordinates: set before super(), which copies the size into the context.
+		duel = self.app.duels.duel
+		self.size_y = type(self).size_y + (self.DUEL_BAND_HEIGHT if duel else 0)
 
 		context = await super().get_context_data()
 
@@ -195,32 +272,151 @@ class BetWidget(WidgetView):
 			status = 'CLOSED'
 			status_color = 'FF7B7BFF'
 
-		if self.app.scope == Bet.SCOPE_ROUND:
-			# The period is the whole map here too -- it is simply opened during the warmup and settled
-			# on points once the last round has been played.
-			period_label = 'Map (points)'
-		else:
-			period_label = 'This map'
+		# Who the room is backing, and at what multiplier. The header used to spend this space repeating
+		# the period ("This map"), which never changes and which nobody needed telling. The favourite
+		# does change, several times a period, and it is the one number that makes you want to answer it.
+		favourite = ''
+		if self.app.current_bets:
+			pots = {}
+			for bet in self.app.current_bets:
+				login = bet['target_login'].lower()
+				pots[login] = pots.get(login, 0) + bet['amount']
+			top_login = max(pots, key=pots.get)
+			favourite = '$fff{}$z$s $aaax{}'.format(
+				self.app.display_name(top_login), self.app.format_odds(self.app.get_odds(top_login))
+			)
 
-		# Only while betting is actually open: a countdown next to a CLOSED badge would be asking players
-		# to watch a clock that buys them nothing. This is the widget most players will read instead of
-		# opening the market window, so it is the countdown that matters most.
+		# The countdown is the widget's second headline number, so it always has a value and always has a
+		# caption explaining what it is counting -- an empty slot next to a CLOSED badge used to leave the
+		# whole right half of the widget looking broken rather than merely idle.
 		time_left = format_time_left(self.app.market_closes_at) if self.app.market_is_open else None
+		if time_left:
+			time_value, time_caption = time_left, 'LEFT TO BET'
+		elif self.app.market_is_open:
+			# Open with no armed deadline: the modes where betting simply stays open for the period.
+			time_value, time_caption = 'OPEN', 'BET ANY TIME'
+		elif status == 'RUNNING':
+			time_value, time_caption = 'LIVE', 'BETS ARE RIDING'
+		elif status == 'PAUSED':
+			time_value, time_caption = '--', 'RESTART PENDING'
+		else:
+			time_value, time_caption = '--', 'BETTING CLOSED'
+
+		# The one button people came for changes its wording with the state instead of always reading
+		# "open the market": when the market is open the useful action is placing a bet, and when it is
+		# shut the window is still worth opening to read the pool.
+		if self.app.market_is_open:
+			cta_label = 'PLACE A BET'
+			cta_color = '09F4FFE0'
+			cta_text_color = '00141AFF'
+		else:
+			cta_label = 'BETTING MARKET'
+			cta_color = 'FFFFFF14'
+			cta_text_color = 'BBBBCCFF'
+
+		# The duel band. Everything a spectator needs to answer "who do I put money on" is here, so the
+		# only click left is the answer itself -- a duel lasts one map and asking players to open a window
+		# to find it is asking most of them not to bother.
+		if duel:
+			context.update(await self._duel_context(duel))
 
 		context.update({
+			'duel_shown': duel is not None,
 			'status': status,
 			'status_color': status_color,
-			'period_label': period_label,
-			'time_left': time_left or '',
+			'favourite': favourite,
+			'time_value': time_value,
+			'time_caption': time_caption,
 			'total_pot': total_pot,
 			'bet_count': bet_count,
 			'bet_word': 'bet' if bet_count == 1 else 'bets',
+			'cta_label': cta_label,
+			'cta_color': cta_color,
+			'cta_text_color': cta_text_color,
 		})
 
 		return context
 
+	DUEL_LIVE_COLOUR = 'F08A2EE0'
+	DUEL_LIVE_TEXT = '140A00FF'
+	DUEL_DEAD_COLOUR = 'FFFFFF12'
+	DUEL_DEAD_TEXT = '8A8AA8FF'
+
+	async def _duel_side_amount(self):
+		"""
+		The one-click stake on the duel buttons: the smallest quick-bet amount, floored at the minimum.
+
+		A fixed amount rather than a prompt because this button is pressed mid-race, with a hand on the
+		accelerator. Players who want to size their stake still have /duelbet, and can press the button
+		more than once.
+		"""
+		amounts = await self.app.get_quick_bet_amounts()
+		minimum = await self.app.setting_min_stake.get_value()
+		return max(min(amounts) if amounts else minimum, minimum)
+
+	async def _duel_context(self, duel):
+		challenger, opponent = duel['challenger'], duel['opponent']
+		pots = self.app.duels.side_pots()
+		amount = await self._duel_side_amount()
+
+		# Spectator betting needs an accepted duel *and* the setting: while the challenge is still being
+		# answered there are no agreed stakes to bet against, and the whole thing may yet evaporate.
+		spectators = await self.app.setting_duel_spectators.get_value()
+		live = self.app.duels.is_active and spectators
+
+		if not self.app.duels.is_active:
+			caption = 'WAITING FOR AN ANSWER'
+		elif not spectators:
+			caption = 'SIDE BETS ARE OFF'
+		else:
+			side_total = sum(pots.values())
+			caption = '{} PLANETS ON THE SIDE'.format(side_total) if side_total else 'NOBODY HAS PICKED A SIDE'
+
+		def side(player, stake):
+			# Pot and odds share one line rather than sitting beside the name: a Trackmania nickname is
+			# arbitrarily long and carries its own colour codes, so anything placed next to it on the same
+			# line gets overrun. Giving the name the full column width is the only layout that survives.
+			pot = pots.get(player.login.lower(), 0)
+			odds = self.app.duels.spectator_odds(player.login)
+			if pot:
+				market = '{} behind'.format(pot)
+				if odds:
+					market = 'x{} - {}'.format(self.app.format_odds(odds), market)
+			else:
+				market = 'nobody behind them yet'
+			return {
+				'name': player.nickname or player.login,
+				'stake': '{} planets'.format(stake) if stake else 'answering...',
+				'market': market,
+			}
+
+		left = side(challenger, duel['challenger_amount'])
+		right = side(opponent, duel['opponent_amount'])
+
+		label = 'BACK FOR {}'.format(amount) if live else ('NOT YET' if not self.app.duels.is_active else 'OFF')
+		colour = self.DUEL_LIVE_COLOUR if live else self.DUEL_DEAD_COLOUR
+		text_colour = self.DUEL_LIVE_TEXT if live else self.DUEL_DEAD_TEXT
+
+		return {
+			'duel_caption': caption,
+			'duel_left_name': left['name'], 'duel_left_stake': left['stake'],
+			'duel_left_market': left['market'],
+			'duel_right_name': right['name'], 'duel_right_stake': right['stake'],
+			'duel_right_market': right['market'],
+			# Per-player overrides in get_player_data() replace these for anyone who can't take the bet.
+			'duel_left_label': label, 'duel_right_label': label,
+			'duel_left_color': colour, 'duel_right_color': colour,
+			'duel_left_text_color': text_colour, 'duel_right_text_color': text_colour,
+		}
+
 	async def get_player_data(self):
 		data = await super().get_player_data()
+
+		max_stake = await self.app.setting_max_stake.get_value()
+
+		duel = self.app.duels.duel
+		duel_live = duel is not None and self.app.duels.is_active \
+			and await self.app.setting_duel_spectators.get_value()
 
 		for player in self.app.instance.player_manager.online:
 			login = player.login.lower()
@@ -229,10 +425,81 @@ class BetWidget(WidgetView):
 			# confirmation still has to be refunded) and would otherwise show up here as ghost bets.
 			pending = [b for b in self.app.pending_stakes_this_period() if b['player'].login.lower() == login]
 
-			parts = ['{} on {}'.format(b['amount'], b['target_login']) for b in active]
-			parts += ['{} on {} (pending)'.format(b['amount'], b['target_login']) for b in pending]
+			# One line per driver, not per stake. Three stakes on the same driver is the normal way to use
+			# this plugin, and spelling them out one by one filled the line with the same nickname three
+			# times over -- which reads as three different bets. What a player wants back from this line is
+			# who they are on and for how much in total; the number of stakes is a detail, so it is a
+			# suffix on the total rather than a repetition of it.
+			totals = OrderedDict()
+			for bet in active + pending:
+				key = bet['target_login'].lower()
+				entry = totals.setdefault(key, dict(amount=0, count=0, pending=0))
+				entry['amount'] += bet['amount']
+				entry['count'] += 1
+			for bet in pending:
+				totals[bet['target_login'].lower()]['pending'] += 1
 
-			data[player.login] = {'own_bets': ', '.join(parts) if parts else 'no active bet'}
+			parts = []
+			for target_login, entry in totals.items():
+				suffix = ' $777({} pending)'.format(entry['pending']) if entry['pending'] else ''
+				parts.append('$fff{}$z$s $aaa({}{}){}'.format(
+					self.app.display_name(target_login),
+					entry['amount'],
+					' over {} bets'.format(entry['count']) if entry['count'] > 1 else '',
+					suffix,
+				))
+
+			used = len(active) + len(pending)
+			staked = sum(b['amount'] for b in active + pending)
+			left = self.app.MAX_BETS_PER_PERIOD - used
+
+			# The button says what is left to the player reading it, and stops looking clickable once
+			# nothing is. Both limits close the same door, so both say so here rather than letting the
+			# player find out by clicking through two windows and collecting a refusal.
+			player_data = {'own_bets': '$aaa + '.join(parts) if parts else '$666none yet'}
+			if self.app.market_is_open and used:
+				if left <= 0:
+					player_data.update({
+						'cta_label': 'ALL {} BETS PLACED'.format(self.app.MAX_BETS_PER_PERIOD),
+						'cta_color': 'FFFFFF14', 'cta_text_color': '8A8AA8FF',
+					})
+				elif staked >= max_stake:
+					player_data.update({
+						'cta_label': 'MAX STAKE REACHED',
+						'cta_color': 'FFFFFF14', 'cta_text_color': '8A8AA8FF',
+					})
+				else:
+					player_data['cta_label'] = 'BET AGAIN ({} LEFT)'.format(left)
+
+			# Duel side buttons, per player. Two people in the room may not take this bet at all -- the
+			# duellists, whose stake is already down -- and anyone who has picked a side is held to it.
+			# Both are rules back_side() already enforces; drawing them here is what stops a player
+			# discovering them by clicking.
+			if duel_live:
+				backing = next(
+					(b['target_login'].lower() for b in duel['spectator_bets']
+					 if b['player'].login.lower() == login),
+					None
+				)
+				for key, side_login in (
+					('duel_left', duel['challenger'].login.lower()),
+					('duel_right', duel['opponent'].login.lower()),
+				):
+					if self.app.duels.involves(login):
+						blocked, label = True, 'YOUR OWN DUEL'
+					elif backing == side_login:
+						blocked, label = False, 'ADD {}'.format(await self._duel_side_amount())
+					elif backing:
+						blocked, label = True, 'OTHER SIDE PICKED'
+					else:
+						continue
+					player_data.update({
+						key + '_label': label,
+						key + '_color': self.DUEL_DEAD_COLOUR if blocked else self.DUEL_LIVE_COLOUR,
+						key + '_text_color': self.DUEL_DEAD_TEXT if blocked else self.DUEL_LIVE_TEXT,
+					})
+
+			data[player.login] = player_data
 
 		return data
 
@@ -250,6 +517,25 @@ class BetWidget(WidgetView):
 		# The only one of the four that answers in chat rather than a window: it is three lines about
 		# you, and a whole paged window for three lines would be worse, not better.
 		await self.app.chat_my_stats(player)
+
+	async def _back_duel_side(self, player, side):
+		# The duel is re-read here rather than trusted from the render: a widget is a picture of a moment
+		# that may be several seconds old, and the duel it showed can have been resolved, refunded or
+		# replaced since. back_side() refuses with its own sentence when it has, which is what a player
+		# who clicked a button that had just gone stale needs to read.
+		duel = self.app.duels.duel
+		if not duel:
+			await self.app._safe_chat(
+				'{}$f00That duel is over.'.format(self.app.CHAT_PREFIX), player
+			)
+			return
+		await self.app.duels.back_side(player, duel[side].login, await self._duel_side_amount())
+
+	async def action_back_challenger(self, player, action, values, **kwargs):
+		await self._back_duel_side(player, 'challenger')
+
+	async def action_back_opponent(self, player, action, values, **kwargs):
+		await self._back_duel_side(player, 'opponent')
 
 
 class BetResultView(TemplateView):
@@ -435,6 +721,20 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 			self.app.market_views.pop(player.login, None)
 		await super().close(player, *args, **kwargs)
 
+	def _own_stakes(self):
+		"""Every stake the player reading this window holds in the period still open, pending included."""
+		if not self.requesting_login:
+			return []
+		login = self.requesting_login.lower()
+		return [
+			dict(b, pending=False) for b in self.app.current_bets
+			if b['player'].login.lower() == login
+		] + [
+			# This period only -- see BetWidget.get_player_data.
+			dict(b, pending=True) for b in self.app.pending_stakes_this_period()
+			if b['player'].login.lower() == login
+		]
+
 	async def get_title(self):
 		# The rule lives in the title because it's the one line of this window nobody can miss, and it
 		# is the rule players get wrong: they expect to be able to spread bets over several drivers.
@@ -448,26 +748,52 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 		left = format_time_left(self.app.market_closes_at)
 		countdown = ' -- {} left'.format(left) if left else ''
 
-		return 'Betting is OPEN{} -- pick ONE driver, up to {} bets on them'.format(
-			countdown, self.app.MAX_BETS_PER_PERIOD
-		)
+		# Once the player has committed, the generic rule is behind them and the useful thing to say is
+		# where they stand under it. The grey buttons below say "you can't"; this says why.
+		own_bets = self._own_stakes()
+		if own_bets:
+			target = self.app.display_name(own_bets[0]['target_login'])
+			used = len(own_bets)
+			if used >= self.app.MAX_BETS_PER_PERIOD:
+				rule = 'all {} bets placed on {}$z$s -- nothing left this period'.format(used, target)
+			else:
+				rule = 'you are on {}$z$s -- {} of {} bets left on them'.format(
+					target, self.app.MAX_BETS_PER_PERIOD - used, self.app.MAX_BETS_PER_PERIOD
+				)
+		else:
+			rule = 'pick ONE driver, up to {} bets on them'.format(self.app.MAX_BETS_PER_PERIOD)
+
+		return 'Betting is OPEN{} -- {}'.format(countdown, rule)
 
 	async def get_data(self):
-		own_bets = []
-		if self.requesting_login:
-			login = self.requesting_login.lower()
-			own_bets = [
-				dict(b, pending=False) for b in self.app.current_bets
-				if b['player'].login.lower() == login
-			] + [
-				# This period only -- see BetWidget.get_player_data.
-				dict(b, pending=True) for b in self.app.pending_stakes_this_period()
-				if b['player'].login.lower() == login
-			]
+		own_bets = self._own_stakes()
 
 		# Historical record of each player as a bet target, keyed by lowercased login to match the rest
 		# of the plugin's login comparisons. Fetched once per render rather than per row.
 		history = {entry['login'].lower(): entry for entry in await self.app.get_target_stats()}
+
+		# What this player is still allowed to do, worked out once for the whole window. The same three
+		# limits place_bet() enforces -- one driver per period, MAX_BETS_PER_PERIOD stakes, a cumulative
+		# max_stake -- decide which buttons are drawn live and which are drawn dead. The refusal messages
+		# were always there; what was missing is that a player had to spend a bet to read one.
+		max_stake = await self.app.setting_max_stake.get_value()
+		min_stake = await self.app.setting_min_stake.get_value()
+		committed_login = own_bets[0]['target_login'].lower() if own_bets else None
+		bets_used = len(own_bets)
+		staked = sum(b['amount'] for b in own_bets)
+		# Room left in planets: what the biggest additional stake could be. Zero means the row is done,
+		# whatever buttons it still shows.
+		room = max(max_stake - staked, 0)
+		if bets_used >= self.app.MAX_BETS_PER_PERIOD or room < min_stake:
+			room = 0
+
+		# Same idea as the betting lock above, for the "Duel" button: a duel is a separate offer to one
+		# specific player, so none of the market's own-bet rules apply to it. What does: duels can be
+		# switched off, the market has to be open to start one, only one duel runs at a time, and you
+		# cannot challenge yourself.
+		duel_enabled = await self.app.setting_duel_enabled.get_value()
+		duel_running = self.app.duels.duel is not None
+		duel_blocked = not duel_enabled or not self.app.market_is_open or duel_running
 
 		rows = []
 		for player in self.app.instance.player_manager.online:
@@ -477,20 +803,35 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 			)
 			odds = self.app.get_odds(player.login)
 
-			own_bet = next(
-				(b for b in own_bets if b['target_login'].lower() == player.login.lower()), None
-			)
-			if own_bet:
-				your_bet = '{}{}'.format(own_bet['amount'], ' (pending)' if own_bet['pending'] else '')
+			# All of this player's stakes on this driver, added up. One row can hold up to
+			# MAX_BETS_PER_PERIOD of them and the column used to show only the first, so a player who had
+			# reinforced twice read their own commitment as a third of what it was.
+			mine_here = [b for b in own_bets if b['target_login'].lower() == player.login.lower()]
+			if mine_here:
+				staked_here = sum(b['amount'] for b in mine_here)
+				notes = []
+				if len(mine_here) > 1:
+					notes.append('{} bets'.format(len(mine_here)))
+				if any(b['pending'] for b in mine_here):
+					notes.append('pending')
+				your_bet = '{}{}'.format(
+					staked_here, ' ({})'.format(', '.join(notes)) if notes else ''
+				)
 				if odds:
-					payout = round(own_bet['amount'] * odds)
-					profit = payout - own_bet['amount']
+					payout = round(staked_here * odds)
+					profit = payout - staked_here
 					potential_win = '{} (+{})'.format(payout, profit)
 				else:
 					potential_win = '-'
 			else:
 				your_bet = '-'
 				potential_win = '-'
+
+			# Is this row still worth clicking? Closed market, a driver already committed to elsewhere, or
+			# no allowance left -- three different sentences from place_bet(), one dead row here. The
+			# window's title carries the explanation, so the row itself only has to look inert.
+			is_mine = committed_login is not None and player.login.lower() == committed_login
+			locked = not self.app.market_is_open or (committed_login is not None and not is_mine) or room <= 0
 
 			past = history.get(player.login.lower())
 			if past:
@@ -502,9 +843,20 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 				form = '$aaanew'
 				avg_odds = '$aaa-'
 
+			is_self = self.requesting_login is not None and player.login.lower() == self.requesting_login.lower()
+
 			rows.append(dict(
+				# Read by list.xml to draw this row's bet buttons dead instead of live. The click still
+				# reaches place_bet() -- greying is a hint, not the rule -- so a player who clicks anyway
+				# gets the same sentence explaining why, rather than nothing happening.
+				_locked=locked,
+				_room=room if not locked else 0,
+				# Same, for the "Duel" button -- see the note above get_actions().
+				_duel_locked=duel_blocked or is_self,
 				login=player.login,
-				nickname=player.nickname,
+				# The driver you are committed to is the one row that still matters once every other row
+				# is grey, so it is marked rather than merely left un-greyed.
+				nickname='$ff0>$z$s {}'.format(player.nickname) if is_mine else player.nickname,
 				pot=str(pot_on_player),
 				odds='x{}'.format(self.app.format_odds(odds)),
 				form=form,
@@ -521,13 +873,20 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 	# of disappearing.
 	BUTTON_BUDGET = 218 - sum(f['width'] for f in fields)
 	QUICK_BET_MIN_WIDTH = 11
-	CUSTOM_BET_WIDTH = 15
+	CUSTOM_BET_WIDTH = 13
+	# The duel entry point lives here rather than as a new "who to bet on" column: this row already
+	# carries a login and a live bet-button strip, so the only new thing a duel button needs is its own
+	# width -- taken from the quick-amount split, same as the custom button was.
+	DUEL_WIDTH = 15
 
 	# Button colours. Open: the green already used for the "Who to bet on" window, plus gold on the
 	# free-amount button so it reads as the odd one out rather than a sixth preset. Closed: a flat slate
 	# that is still clearly a button-shaped thing, so the row does not look broken -- just inactive.
 	QUICK_BET_COLOUR = BetListStyleMixin.ACCENTS['green']['button']
 	CUSTOM_BET_COLOUR = BetListStyleMixin.ACCENTS['gold']['button']
+	# The same orange as the duel challenge window's accent (duel_challenge.xml), so the button that opens
+	# it and the window it opens read as the same feature.
+	DUEL_COLOUR = 'F08A2EE0'
 	DISABLED_COLOUR = '444444AA'
 	DISABLED_TEXT = '$999'
 
@@ -556,7 +915,7 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 			return
 
 		amounts = await self.app.get_quick_bet_amounts()
-		quick_budget = max(self.BUTTON_BUDGET - self.CUSTOM_BET_WIDTH, 0)
+		quick_budget = max(self.BUTTON_BUDGET - self.CUSTOM_BET_WIDTH - self.DUEL_WIDTH, 0)
 		quick_width = max(quick_budget // len(amounts), self.QUICK_BET_MIN_WIDTH) if amounts else 0
 
 		actions = []
@@ -574,6 +933,11 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 				'width': quick_width,
 				'action': bet_action if market_open else closed_action,
 				'safe': True,
+				# Read by list.xml, per row: `amount` against the row's remaining allowance, and the
+				# colour to fall back to when this particular button on this particular row could only
+				# ever be refused. See the `_locked` note in get_data().
+				'amount': amount,
+				'locked_bgcolor': self.DISABLED_COLOUR,
 			})
 
 		# Free-amount button. The quick amounts cover the common cases, but they are fixed numbers: a
@@ -583,14 +947,14 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 		max_stake = await self.app.setting_max_stake.get_value()
 
 		async def custom_bet_action(player, values, instance, view=None, **kwargs):
-			answer = await ask_input(
+			answer = await ask_amount(
 				player,
 				'How many planets do you want to bet on $<{}$>?\n(between {} and {})'.format(
 					instance['nickname'], min_stake, max_stake
 				),
 				default=str(min_stake),
 			)
-			# ask_input returns None when the prompt is dismissed rather than answered.
+			# None when the player pressed Cancel or dismissed the prompt.
 			if answer is None:
 				return
 			try:
@@ -610,6 +974,53 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 			'width': self.CUSTOM_BET_WIDTH,
 			'action': custom_bet_action if market_open else closed_action,
 			'safe': True,
+			# No `amount`: this button has no fixed size, so it only goes dead when the whole row does.
+			'locked_bgcolor': self.DISABLED_COLOUR,
+		})
+
+		# The duel entry point. Previously the only way into a duel was the /duel chat command, which
+		# meant knowing the command and typing an opponent's login by hand. This row already has both the
+		# opponent and a bet-amount picker, so re-using ask_input gets a duel challenge out of chat and
+		# into the window the player already has open. Availability is its own rule, not the betting
+		# one -- see the `_duel_locked` note in get_data() -- so it reads `lock_key` instead of `_locked`.
+		duel_enabled = await self.app.setting_duel_enabled.get_value()
+		duel_min = await self.app.setting_duel_min_stake.get_value()
+		duel_max = await self.app.setting_duel_max_stake.get_value()
+
+		async def duel_action(player, values, instance, view=None, **kwargs):
+			answer = await ask_amount(
+				player,
+				'Challenge $<{}$> to a duel for how many planets?\n(between {} and {})'.format(
+					instance['nickname'], duel_min, duel_max
+				),
+				default=str(duel_min),
+			)
+			if answer is None:
+				return
+			try:
+				amount = int(str(answer).strip())
+			except ValueError:
+				await self.app.instance.chat(
+					'$i$f00That is not a number. Type only digits, for example 250.', player
+				)
+				return
+			await self.app.duels.challenge(player, instance['login'], amount)
+			if view is not None:
+				await view.refresh(player)
+
+		actions.append({
+			'name': 'Challenge to a duel',
+			'type': 'label',
+			'text': 'Duel' if duel_enabled else '{}Duel'.format(self.DISABLED_TEXT),
+			'bgcolor': self.DUEL_COLOUR if duel_enabled else self.DISABLED_COLOUR,
+			'width': self.DUEL_WIDTH,
+			'action': duel_action if duel_enabled else closed_action,
+			'safe': True,
+			# No `amount`: a duel's own availability (already running, closed market, yourself) is decided
+			# per row by `_duel_locked`, not by the betting allowance this column's `amount`/`_room` pair
+			# reads -- hence `lock_key` instead.
+			'lock_key': '_duel_locked',
+			'locked_bgcolor': self.DISABLED_COLOUR,
 		})
 
 		return actions
@@ -692,13 +1103,16 @@ class BetTargetsView(BetListStyleMixin, BetNavMixin, ManualListView):
 	icon_substyle = 'Statistics'
 
 	fields = [
-		{'name': 'Player',           'index': 'nickname', 'sorting': True,  'searching': True,  'width': 28},
-		{'name': 'Badge',            'index': 'title',    'sorting': False, 'searching': False, 'width': 26},
-		{'name': 'Times bet on',     'index': 'backed',   'sorting': False, 'searching': False, 'width': 20},
-		{'name': 'Wins',             'index': 'form',     'sorting': False, 'searching': False, 'width': 16},
-		{'name': 'Planets bet',      'index': 'staked',   'sorting': False, 'searching': False, 'width': 18},
-		{'name': "Backers' profit",  'index': 'net',      'sorting': False, 'searching': False, 'width': 22},
-		{'name': 'Usual multiplier', 'index': 'avg_odds', 'sorting': False, 'searching': False, 'width': 22},
+		{'name': 'Player',           'index': 'nickname',  'sorting': True,  'searching': True,  'width': 28},
+		{'name': 'Badge',            'index': 'title',     'sorting': False, 'searching': False, 'width': 24},
+		# Duels sit next to the badge rather than at the far end: it is the one number on this board a
+		# player earns by driving instead of by being picked, so it is the one they came to look at.
+		{'name': 'Duels won',        'index': 'duel_form', 'sorting': False, 'searching': False, 'width': 20},
+		{'name': 'Times bet on',     'index': 'backed',    'sorting': False, 'searching': False, 'width': 18},
+		{'name': 'Wins',             'index': 'form',      'sorting': False, 'searching': False, 'width': 16},
+		{'name': 'Planets bet',      'index': 'staked',    'sorting': False, 'searching': False, 'width': 18},
+		{'name': "Backers' profit",  'index': 'net',       'sorting': False, 'searching': False, 'width': 21},
+		{'name': 'Usual multiplier', 'index': 'avg_odds',  'sorting': False, 'searching': False, 'width': 21},
 	]
 
 	def __init__(self, app):
@@ -720,8 +1134,171 @@ class BetTargetsView(BetListStyleMixin, BetNavMixin, ManualListView):
 				title=entry['title'] or '',
 				backed=str(entry['backed']),
 				form='{}/{} ({}%)'.format(entry['wins'], entry['backed'], round(entry['win_rate'])),
+				duel_form=format_duel_record(entry),
 				staked=str(entry['staked']),
 				net=net_str,
 				avg_odds='x{}'.format(self.app.format_odds(entry['avg_odds'])),
 			))
 		return rows
+
+
+class BetDuelBoardView(BetListStyleMixin, BetNavMixin, ManualListView):
+	"""
+	The duel record board: who has actually beaten whom, head to head.
+
+	Every other window in this plugin is about money -- what the room staked, what it got back, who
+	priced whom correctly. This one is about the driving, which is why wins come before planets in the
+	sort and why the top of the board cannot be bought by duelling for larger amounts. It is the board
+	a player is supposed to be able to point at.
+	"""
+
+	nav_key = 'duels'
+	accent = 'orange'
+	title = 'BetPluggin -- duel record'
+	icon_style = 'Icons128x128_1'
+	icon_substyle = 'Solo'
+
+	fields = [
+		{'name': '#',            'index': 'rank',      'sorting': False, 'searching': False, 'width': 10},
+		{'name': 'Player',       'index': 'nickname',  'sorting': True,  'searching': True,  'width': 40},
+		{'name': 'Title',        'index': 'crown',     'sorting': False, 'searching': False, 'width': 28},
+		{'name': 'Won',          'index': 'wins',      'sorting': False, 'searching': False, 'width': 12},
+		{'name': 'Lost',         'index': 'losses',    'sorting': False, 'searching': False, 'width': 12},
+		{'name': 'Draw',         'index': 'draws',     'sorting': False, 'searching': False, 'width': 12},
+		{'name': 'Duels',        'index': 'duels',     'sorting': False, 'searching': False, 'width': 14},
+		{'name': 'Win %',        'index': 'win_rate',  'sorting': False, 'searching': False, 'width': 14},
+		{'name': 'Planets won',  'index': 'net',       'sorting': False, 'searching': False, 'width': 22},
+	]
+
+	def __init__(self, app):
+		super().__init__()
+		self.app = app
+		self.manager = app.context.ui
+
+	async def get_data(self):
+		entries = await self.app.get_duel_stats()
+		rows = []
+		for position, entry in enumerate(entries, start=1):
+			net = entry['duel_net']
+			net_str = (
+				'$0f0{:+d}$z'.format(net) if net > 0
+				else '$f00{:+d}$z'.format(net) if net < 0
+				else '{:+d}'.format(net)
+			)
+			rows.append(dict(
+				rank=str(position),
+				nickname=entry['nickname'],
+				# One line of bragging rights, given out on the spot rather than stored. The top three
+				# are named because a board where only the first row means anything stops being worth
+				# climbing at position two.
+				crown=DUEL_TITLES.get(position, ''),
+				wins='$0f0{}$z'.format(entry['duel_wins']) if entry['duel_wins'] else '0',
+				losses='$f00{}$z'.format(entry['duel_losses']) if entry['duel_losses'] else '0',
+				draws=str(entry['duel_draws']),
+				duels=str(entry['duels']),
+				win_rate='{}%'.format(round(entry['duel_win_rate'])),
+				net=net_str,
+			))
+		return rows
+
+
+class DuelChallengeView(TemplateView):
+	"""
+	The "X has challenged you" window, shown to the challenged player and to nobody else.
+
+	Deliberately not a list view: this is a question with a deadline, and every extra click between
+	reading it and answering it is time off the clock. So the three amounts a player realistically
+	wants -- half, the same, double -- are one click each, and refusing is one click too.
+
+	The amounts are computed once, when the challenge is made, and never refreshed. The window's whole
+	life is the accept timeout; a redraw mid-answer would move the buttons under the player's cursor.
+	"""
+
+	template_name = 'betpluggin/duel_challenge.xml'
+
+	def __init__(self, app, duel):
+		super().__init__()
+		self.app = app
+		self.manager = app.context.ui
+		self.duel = duel
+
+		self.subscribe('decline', self.action_decline)
+		self.subscribe('custom', self.action_custom)
+		for index in range(3):
+			self.subscribe('accept_{}'.format(index), self.action_accept)
+
+		# Filled by display(), because working them out needs the settings and __init__ can't await.
+		self.amounts = []
+
+	async def display(self, **kwargs):
+		self.amounts = await self.app.duels.suggested_amounts(self.duel['challenger_amount'])
+		return await super().display(**kwargs)
+
+	async def get_context_data(self):
+		context = await super().get_context_data()
+		challenger = self.duel['challenger']
+
+		# Three slots, always: the template draws a fixed row, and clamping to the stake limits can
+		# collapse "half / same / double" down to one or two distinct amounts. The unused slots are sent
+		# as empty and the template skips them, rather than the template having to loop.
+		labels = ['Half', 'Match', 'Double']
+		buttons = []
+		for index in range(3):
+			if index < len(self.amounts):
+				buttons.append(dict(
+					index=index, amount=self.amounts[index],
+					label=labels[index] if index < len(labels) else '', shown=True,
+				))
+			else:
+				buttons.append(dict(index=index, amount=0, label='', shown=False))
+
+		context.update({
+			'challenger': challenger.nickname or challenger.login,
+			'challenge_amount': self.duel['challenger_amount'],
+			'timeout': await self.app.setting_duel_accept_seconds.get_value(),
+			'buttons': buttons,
+		})
+		return context
+
+	async def action_decline(self, player, action, values, **kwargs):
+		await self.app.duels.decline(player)
+
+	async def action_accept(self, player, action, values, **kwargs):
+		# The button index is the tail of the action name, which is the only thing the manialink sends
+		# back -- ManiaLink actions carry no payload of their own.
+		try:
+			index = int(action.rsplit('accept_', 1)[1])
+		except (IndexError, ValueError):
+			return
+		if index >= len(self.amounts):
+			return
+		await self.app.duels.accept(player, self.amounts[index])
+
+	async def action_custom(self, player, action, values, **kwargs):
+		"""Any other amount. Closes this window first: the prompt would otherwise open behind it."""
+		await self.destroy()
+
+		amount = await ask_amount(
+			player, 'How many planets do you put up?',
+			default=str(self.duel['challenger_amount']), size='sm',
+		)
+		# Cancel here backs out of the amount prompt, not out of the duel: the challenge is still
+		# standing and still timing out, so say so rather than leaving them wondering.
+		if amount is None:
+			await self.app._safe_chat(
+				'{}$ff0The duel is still waiting for you -- answer with $fff/accept <amount>$ff0 '
+				'or $fff/decline$ff0.'.format(self.app.CHAT_PREFIX),
+				player
+			)
+			return
+		try:
+			amount = int(str(amount).strip())
+		except (TypeError, ValueError):
+			await self.app._safe_chat(
+				'{}$f00That is not a number -- the duel is still waiting, answer with '
+				'$fff/accept <amount>$f00.'.format(self.app.CHAT_PREFIX),
+				player
+			)
+			return
+
+		await self.app.duels.accept(player, amount)
