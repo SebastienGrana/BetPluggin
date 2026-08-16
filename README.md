@@ -71,9 +71,9 @@ server takes no margin — this one is strictly between the two of them.
 - `/duels` is the duel record board — who has won the most duels on this server. Duel wins also show as
   a column on the *Who to bet on* board.
 
-## Admin commands the plugin reacts to
+## PyPlanet commands the plugin reacts to
 
-BetPluggin watches PyPlanet's own admin commands, because they change the shape of the thing people are
+BetPluggin watches PyPlanet's own commands, because they change the shape of the thing people are
 betting on. This works from the chat line, from the admin toolbar buttons, and from any other app that
 runs them.
 
@@ -83,6 +83,7 @@ runs them.
 | `//extend` | The betting window is re-measured against the map's new length, so "open for the first 30% of the map" stays true after the map gets longer. Only applies to the percentage window — `betting_window_seconds` is an absolute duration and an extension is no reason to hand out more of it. |
 | `//pause` / `//unpause` | The betting countdown freezes and resumes with the match. Without this the window would quietly expire while nobody is driving. |
 | `//endwu` | Already closes betting in round-based modes, as the end of the warmup always does. |
+| `/skip`, `/restart`, `/previous`, `/extend` (players) | Same reactions — but **only once the chat vote actually passes**. These come from PyPlanet's `voting` app and don't do anything by themselves, so betting is hooked to the vote's outcome, not to the command: a vote the server refuses must leave the market exactly as it found it. `//pass` lands on the same handlers and is covered too. |
 
 `//replay`, `//mode`, `//shuffle`, `//endround` and the maplist commands don't affect a market in
 progress, so betting ignores them. There is no `/retry` command in PyPlanet — retrying is the player's
@@ -157,8 +158,13 @@ restart PyPlanet.
   That is deliberately the one place all three call paths meet: there is no signal for "an admin skipped
   the map", `map_start`'s `restarted` flag arrives *after* the pot would already have been paid out, and
   listening for the chat line would miss the admin toolbar entirely — its buttons call the command
-  dispatcher directly. If PyPlanet ever renames those commands, the plugin logs a warning at startup
-  naming the ones it could not hook rather than failing silently.
+  dispatcher directly. The player-facing `/skip` and friends are hooked separately
+  (`_install_vote_hooks`), on the `voting` app's `vote_*_passed` handlers rather than on its commands,
+  since the commands only open a vote. If PyPlanet ever renames any of them, the plugin logs a warning
+  at startup naming what it could not hook rather than failing silently.
+- Still unhooked: ManiaPlanet's own built-in callvotes (the server-side vote UI, `mp_signals.other.vote_updated`),
+  which are a separate path to NextMap/RestartMap from PyPlanet's chat votes. Most servers disable them
+  in favour of the `voting` app.
 - BetPluggin never tracks a player's Planets balance itself (there's no API to query it) — only its own
   betting history (`Bet` table), used for `/wallet` and the leaderboard. Live balance is always whatever
   your game client shows you.

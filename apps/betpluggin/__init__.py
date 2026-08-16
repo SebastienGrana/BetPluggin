@@ -299,6 +299,10 @@ class BetplugginApp(AppConfig):
 		# See _install_command_hooks.
 		self.hooked_commands = []
 
+		# The same, for the chat-vote outcomes in PyPlanet's `voting` app, as
+		# [(voting app, method name, original method)]. See _install_vote_hooks.
+		self.hooked_votes = []
+
 	async def on_start(self):
 		await self.instance.command_manager.register(
 			Command(
@@ -412,9 +416,10 @@ class BetplugginApp(AppConfig):
 
 		self.widget = BetWidget(self)
 
-		# The admin commands that cut a map short, lengthen it, or freeze it. Not a signal: there isn't
-		# one for most of them. See _install_command_hooks.
+		# The commands that cut a map short, lengthen it, or freeze it -- the admin ones an admin types,
+		# and the player ones that get there by chat vote. Not signals: there aren't any for these.
 		await self._install_command_hooks()
+		await self._install_vote_hooks()
 
 		# Handle the map that might already be running when the app (re)starts. We can't know how much
 		# of it has already played out, so don't reopen a fresh betting window for it -- that would let
@@ -458,6 +463,35 @@ class BetplugginApp(AppConfig):
 		('pause', 'after', '_native_pause'),
 		('unpause', 'after', '_native_unpause'),
 	)
+
+	# The same map-flow actions, reached the other way: PyPlanet's `voting` app gives *players* /skip,
+	# /restart, /previous and /extend, which start a chat vote rather than doing anything themselves.
+	#
+	# So these hook the vote's outcome, not its command. A vote that nobody backs must leave the market
+	# exactly as it found it, and hooking /skip would call betting off the moment somebody asked for a
+	# skip the server then refused. `//pass` (an admin forcing a vote through) lands on the same
+	# handlers, so it is covered by these too.
+	#
+	# Each entry is (method on the voting app, when to react, handler, name to react under).
+	NATIVE_VOTE_HOOKS = (
+		('vote_skip_passed', 'before', '_native_map_cut', 'vote skip'),
+		('vote_previous_passed', 'before', '_native_map_cut', 'vote previous'),
+		('vote_restart_passed', 'before', '_native_map_cut', 'vote restart'),
+		('vote_extend_passed', 'after', '_native_extend', 'vote extend'),
+	)
+
+	# Why the period was called off, per hooked action. Named rather than generic because "betting is
+	# off" with no reason reads as the plugin having lost track of the map -- and a player who has just
+	# had a stake handed back is owed the difference between "an admin skipped it" and "you all voted to".
+	CUT_REASONS = {
+		'skip': 'the map was skipped by an admin',
+		'next': 'the map was skipped by an admin',
+		'previous': 'the map was skipped by an admin',
+		'restart': 'the map was restarted by an admin',
+		'vote skip': 'the players voted to skip the map',
+		'vote previous': 'the players voted to go back to the previous map',
+		'vote restart': 'the players voted to restart the map',
+	}
 
 	async def _install_command_hooks(self):
 		"""
@@ -531,11 +565,60 @@ class BetplugginApp(AppConfig):
 
 		return hook
 
+	async def _install_vote_hooks(self):
+		"""
+		Same reactions, for the chat votes that reach the same actions. See NATIVE_VOTE_HOOKS.
+
+		Wrapping methods on the voting app instance rather than its commands, because the commands only
+		open a vote. There is no signal for "a vote passed" either -- PyPlanet calls these handlers
+		directly from its own vote bookkeeping.
+		"""
+		voting = self.instance.apps.apps.get('voting')
+		if voting is None:
+			# Perfectly normal: the voting app is optional and plenty of servers run without it.
+			logger.info('BetPluggin: the `voting` app is not loaded -- no chat votes to react to.')
+			return
+
+		for attr, when, handler_name, name in self.NATIVE_VOTE_HOOKS:
+			original = getattr(voting, attr, None)
+			if original is None:
+				logger.warning(
+					'BetPluggin: the voting app has no %s() -- betting will not react to that vote.', attr
+				)
+				continue
+			setattr(voting, attr, self._make_vote_hook(name, when, handler_name, original))
+			self.hooked_votes.append((voting, attr, original))
+
+	def _make_vote_hook(self, name, when, handler_name, original):
+		async def hook(vote, forced, *args, **kwargs):
+			handler = getattr(self, handler_name)
+			logger.info('BetPluggin: reacting to the %s vote passing (%s it runs).', name, when)
+
+			if when == 'before':
+				try:
+					await handler(name, getattr(vote, 'requester', None), None)
+				except Exception as e:
+					logger.exception('BetPluggin: reacting to the %s vote failed: %s', name, e)
+				return await original(vote, forced, *args, **kwargs)
+
+			result = await original(vote, forced, *args, **kwargs)
+			try:
+				await handler(name, getattr(vote, 'requester', None), None)
+			except Exception as e:
+				logger.exception('BetPluggin: reacting to the %s vote failed: %s', name, e)
+			return result
+
+		return hook
+
 	def _restore_command_hooks(self):
 		"""Put every wrapped target back. Leaving a closure over a dead app behind would keep firing."""
 		for command, original in self.hooked_commands:
 			command.target = original
 		self.hooked_commands = []
+
+		for owner, attr, original in self.hooked_votes:
+			setattr(owner, attr, original)
+		self.hooked_votes = []
 
 	async def _native_map_cut(self, name, player, data=None):
 		"""
@@ -549,13 +632,13 @@ class BetplugginApp(AppConfig):
 		"""
 		if name == 'previous':
 			# //previous refuses to do anything in two cases, and voiding a map that then keeps playing
-			# would be worse than not reacting at all. Same two checks PyPlanet makes.
+			# would be worse than not reacting at all. Same two checks PyPlanet makes. The *vote*
+			# version makes no such check and always calls NextMap, so it is deliberately not included.
 			previous = self.instance.map_manager.previous_map
 			if not previous or previous == self.instance.map_manager.current_map:
 				return
 
-		reason = 'the map was restarted' if name == 'restart' else 'the map was skipped'
-		await self._void_period('{} by an admin'.format(reason))
+		await self._void_period(self.CUT_REASONS.get(name, 'the map was cut short'))
 
 	async def _native_extend(self, name, player, data=None):
 		"""
@@ -2356,3 +2439,4 @@ class BetplugginApp(AppConfig):
 		await self.instance.chat('$fff//extend$ff0 - The betting window is re-measured against the map\'s new length (percentage windows only).', player)
 		await self.instance.chat('$fff//pause$ff0 / $fff//unpause$ff0 - The betting countdown is frozen and resumed with it.', player)
 		await self.instance.chat('$fff//endwu$ff0 - Already closes betting in round-based modes, as the end of the warmup always does.', player)
+		await self.instance.chat('$ff0Player chat votes ($fff/skip$ff0, $fff/restart$ff0, $fff/previous$ff0, $fff/extend$ff0) do the same - but only once the vote actually passes.', player)
