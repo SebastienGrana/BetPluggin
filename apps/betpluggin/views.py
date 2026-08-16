@@ -4,6 +4,7 @@ podium, and two interactive list views (the live betting market with quick-bet b
 all-time player leaderboard).
 """
 import asyncio
+import time
 
 from pyplanet.views.generics.alert import ask_input
 from pyplanet.views.generics.list import ManualListView
@@ -44,6 +45,13 @@ class BetListStyleMixin:
 	template_name = 'betpluggin/list.xml'
 	accent = 'blue'
 
+	# Header shown above the action buttons, in the same strip as the column names. PyPlanet's list only
+	# labels `fields`, so a row of buttons arrives with nothing saying what they do -- which pushes you
+	# into repeating the verb on every single button ("Bet 50", "Bet 100", ...). Naming the group once
+	# here lets each button carry just its amount. None (the default) leaves the strip empty, which is
+	# what the windows without buttons want.
+	actions_header = None
+
 	async def get_context_data(self):
 		context = await super().get_context_data()
 		colours = self.ACCENTS[self.accent]
@@ -51,6 +59,7 @@ class BetListStyleMixin:
 			'accent_tint': colours['tint'],
 			'accent_header': colours['header'],
 			'accent_line': colours['line'],
+			'actions_header': self.actions_header,
 		})
 		return context
 
@@ -315,6 +324,12 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 	icon_style = 'Icons128x128_1'
 	icon_substyle = 'Statistics'
 
+	# The search box only filters the Player column, and this window lists nothing but the players
+	# currently connected -- a list you can already read at a glance. It earns its place on the
+	# leaderboard and targets windows, which grow with every player who has ever been bet on; here it
+	# just takes the top bar away from the navigation buttons.
+	provide_search = False
+
 	fields = [
 		{
 			'name': 'Player',
@@ -403,11 +418,25 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 	async def get_title(self):
 		# The rule lives in the title because it's the one line of this window nobody can miss, and it
 		# is the rule players get wrong: they expect to be able to spread bets over several drivers.
-		if self.app.market_is_open:
-			return 'Betting is OPEN -- pick ONE driver, up to {} bets on them'.format(
-				self.app.MAX_BETS_PER_PERIOD
-			)
-		return 'Betting is currently closed'
+		if not self.app.market_is_open:
+			return 'Betting is currently closed'
+
+		# How long is left to bet, when an auto-close is armed. This is a snapshot taken as the window
+		# renders, not a ticking clock -- a manialink list is drawn once and then sits there -- so it's
+		# phrased as an approximation rather than a countdown that would visibly go stale. The chat
+		# warning shortly before the close is what catches players who left the window open.
+		countdown = ''
+		closes_at = self.app.market_closes_at
+		if closes_at:
+			left = int(closes_at - time.time())
+			if left > 0:
+				countdown = ' -- about {} left'.format(
+					'{}m{:02d}s'.format(left // 60, left % 60) if left >= 60 else '{}s'.format(left)
+				)
+
+		return 'Betting is OPEN{} -- pick ONE driver, up to {} bets on them'.format(
+			countdown, self.app.MAX_BETS_PER_PERIOD
+		)
 
 	async def get_data(self):
 		own_bets = []
@@ -471,12 +500,25 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 			))
 		return rows
 
-	# Buttons per row: the quick amounts, then "Bet ...". Only the first three quick amounts are drawn --
-	# the setting is free-form, and a fourth one would push the row past the 218 units the list template
-	# has to give (see the note under `fields`), silently pushing the last button off the card.
-	MAX_QUICK_BETS = 3
-	QUICK_BET_WIDTH = 16
-	CUSTOM_BET_WIDTH = 21
+	# Buttons per row: every configured quick amount, then "Bet ...". The setting is free-form -- rather
+	# than hardcode a max count and silently drop the rest, the row's button budget (what's left of the
+	# 218 units after `fields`, see the note above) is split evenly across however many amounts are
+	# configured, so adding a fourth or fifth quick amount just makes each button a bit narrower instead
+	# of disappearing.
+	BUTTON_BUDGET = 218 - sum(f['width'] for f in fields)
+	QUICK_BET_MIN_WIDTH = 11
+	CUSTOM_BET_WIDTH = 15
+
+	# Button colours. Open: the green already used for the "Who to bet on" window, plus gold on the
+	# free-amount button so it reads as the odd one out rather than a sixth preset. Closed: a flat slate
+	# that is still clearly a button-shaped thing, so the row does not look broken -- just inactive.
+	QUICK_BET_COLOUR = BetListStyleMixin.ACCENTS['green']['button']
+	CUSTOM_BET_COLOUR = BetListStyleMixin.ACCENTS['gold']['button']
+	DISABLED_COLOUR = '444444AA'
+	DISABLED_TEXT = '$999'
+
+	# Names the button strip in the header row, so the buttons themselves only carry their amount.
+	actions_header = 'Bet'
 
 	async def _submit_bet(self, player, target_login, amount, view):
 		"""Place a bet and report the outcome in chat. Shared by the quick and custom buttons."""
@@ -491,26 +533,38 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 			await view.refresh(player)
 
 	async def get_actions(self):
-		if not self.app.market_is_open:
-			return []
+		# Buttons stay on the card at all times -- closed or before opening -- rather than vanishing, so
+		# the window doesn't reflow and players always know where to click once betting opens. When the
+		# market isn't open they're just greyed out and wired to a no-op instead of the real bet action.
+		market_open = self.app.market_is_open
+
+		async def closed_action(player, values, instance, view=None, **kwargs):
+			return
+
+		amounts = await self.app.get_quick_bet_amounts()
+		quick_budget = max(self.BUTTON_BUDGET - self.CUSTOM_BET_WIDTH, 0)
+		quick_width = max(quick_budget // len(amounts), self.QUICK_BET_MIN_WIDTH) if amounts else 0
 
 		actions = []
-		for amount in (await self.app.get_quick_bet_amounts())[:self.MAX_QUICK_BETS]:
+		for amount in amounts:
 			async def bet_action(player, values, instance, view=None, amount=amount, **kwargs):
 				await self._submit_bet(player, instance['login'], amount, view)
 
+			# Just the number: the "Bet" header above the strip already says what clicking one does, and
+			# repeating the verb on every button cost the width that was making them run into each other.
 			actions.append({
 				'name': 'Bet {}'.format(amount),
 				'type': 'label',
-				'text': 'Bet {}'.format(amount),
-				'width': self.QUICK_BET_WIDTH,
-				'action': bet_action,
+				'text': str(amount) if market_open else '{}{}'.format(self.DISABLED_TEXT, amount),
+				'bgcolor': self.QUICK_BET_COLOUR if market_open else self.DISABLED_COLOUR,
+				'width': quick_width,
+				'action': bet_action if market_open else closed_action,
 				'safe': True,
 			})
 
-		# Free-amount button. The quick amounts cover the common cases, but they are three fixed numbers:
-		# a player who wants to put their whole balance on someone, or the exact 37 planets they have
-		# left, previously had to close the window and type /bet by hand.
+		# Free-amount button. The quick amounts cover the common cases, but they are fixed numbers: a
+		# player who wants to put their whole balance on someone, or the exact 37 planets they have left,
+		# previously had to close the window and type /bet by hand.
 		min_stake = await self.app.setting_min_stake.get_value()
 		max_stake = await self.app.setting_max_stake.get_value()
 
@@ -537,9 +591,10 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 		actions.append({
 			'name': 'Bet a chosen amount',
 			'type': 'label',
-			'text': 'Bet ...',
+			'text': 'Other' if market_open else '{}Other'.format(self.DISABLED_TEXT),
+			'bgcolor': self.CUSTOM_BET_COLOUR if market_open else self.DISABLED_COLOUR,
 			'width': self.CUSTOM_BET_WIDTH,
-			'action': custom_bet_action,
+			'action': custom_bet_action if market_open else closed_action,
 			'safe': True,
 		})
 

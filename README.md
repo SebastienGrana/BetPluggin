@@ -19,19 +19,30 @@ out through the server's own in-game payment system (no separate fictional curre
 - A player can hold several bets at once, as long as each is on a *different* target for the current
   period (no doubling down on the same target).
 - **Market period depends on the game mode:**
-  - **TimeAttack, Cup, and anything not listed below** — one market per map, open from map start and
-    resolved when the map ends.
+  - **TimeAttack, Cup, and anything not listed below** — one market per map. It opens at map start,
+    auto-closes partway through (see the betting window below), and settles on whoever finished first.
   - **Rounds** (and `Teams`/`Knockout`, see `ROUND_SCOPED_MODES` in `apps/betpluggin/__init__.py`) — a
-    fresh market opens at the start of *each round* and resolves at the end of that round.
+    map is played as several rounds and only the final standing matters, so there is still just **one
+    market per map**: it opens for the **whole warmup**, closes the moment the warmup ends, then rides
+    every round and settles on whoever holds the most map points. The rounds themselves neither open,
+    close nor resolve anything — they're the race being bet on. Betting during the warmup is the point:
+    everyone is watching everyone practise, and that practice is the information a bettor wants.
   - Any other mode you run defaults to map-scoped betting until you add it to `ROUND_SCOPED_MODES` —
     the list is a single line to edit once you know how that mode should behave.
-  - A market stays open for bets the whole period — it doesn't auto-close early. An admin can close it
-    early with `//bet close` (e.g. to stop bets once a race is clearly decided); `//bet open` reopens it.
+  - **The betting window closes before the period does**, so nobody bets on a result they can already
+    see. Set it either as a plain duration (`betting_window_seconds`, e.g. 60 = betting open for the
+    first minute) or, if that's left at 0, as a share of the map time (`betting_window_percent`).
+    Players get a chat warning `market_closing_warning_seconds` before it shuts. In round-based modes
+    the warmup's end is the close, so neither setting applies. An admin can also close early with
+    `//bet close` (e.g. once a race is clearly decided); `//bet open` reopens it.
   - If PyPlanet (re)starts mid-map, betting stays closed for the rest of that map (so nobody bets with
     information others didn't have) and the HUD widget shows **PAUSED** instead of CLOSED to make that
     reason clear. It resumes normally on the next real map/round start.
 - **Odds** are pari-mutuel: `total pot / pot on that target`. They move live as people bet and are shown
   in `/betmarket`, in the HUD widget, and locked in on your bet at the moment you place it.
+- **Results land during the podium.** Resolution is triggered by the server's final `scores` payload,
+  which arrives just as the podium (`S_ChatTime`) begins — so the payout card is on screen while
+  players are still looking at the end-of-map screen, rather than after it has been dismissed.
 - At resolution, the server (`scores` signal) tells us who actually won. Winners are paid from the
   server's own Planets balance, split proportionally to their stake; if nobody bet on the winner, their
   stakes are simply not returned (normal betting outcome). If BetPluggin genuinely can't tell who won,
@@ -88,7 +99,9 @@ restart PyPlanet.
 ## Notes
 
 - `//settings` in-game lets an admin tweak `quick_bet_amounts`, `bet_minimum_stake`,
-  `bet_maximum_stake`, `betting_window_percent` and `market_closing_warning_seconds` without touching code.
+  `bet_maximum_stake`, `betting_window_seconds`, `betting_window_percent` and
+  `market_closing_warning_seconds` without touching code. `quick_bet_amounts` takes as many amounts as
+  you like — the market window sizes its buttons to fit however many you configure.
 - BetPluggin never tracks a player's Planets balance itself (there's no API to query it) — only its own
   betting history (`Bet` table), used for `/wallet` and the leaderboard. Live balance is always whatever
   your game client shows you.

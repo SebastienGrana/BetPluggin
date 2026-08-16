@@ -164,11 +164,20 @@ class BetplugginApp(AppConfig):
 			default=2500
 		)
 
+		self.setting_betting_window_seconds = Setting(
+			'betting_window_seconds', 'Betting window (seconds)', Setting.CAT_BEHAVIOUR, type=int,
+			description='How many seconds betting stays open from the start of the map/round. This is the '
+						'straightforward way to set the window -- you get exactly the number you type, '
+						'whatever the map time limit is. 0 falls back to the percentage setting below.',
+			default=0
+		)
+
 		self.setting_betting_window = Setting(
 			'betting_window_percent', 'Betting window (% of the period)', Setting.CAT_BEHAVIOUR, type=int,
-			description='Close betting once this share of the map/round time has passed. Betting open '
-						'until the very end lets players bet on a result they can already see; closing '
-						'early makes it a prediction again. 0 or 100 keeps the market open all period.',
+			description='Fallback for when the seconds setting above is 0: close betting once this share '
+						'of the map/round time has passed. Betting open until the very end lets players '
+						'bet on a result they can already see; closing early makes it a prediction again. '
+						'0 or 100 keeps the market open all period.',
 			default=50
 		)
 
@@ -182,6 +191,10 @@ class BetplugginApp(AppConfig):
 
 		# Pending auto-close of the betting window for the period currently open. See _schedule_market_close.
 		self.market_close_task = None
+
+		# When that auto-close is due to fire (time.time()), or None when nothing is armed. Kept purely
+		# so the market window can tell players how long they have left to bet.
+		self.market_closes_at = None
 
 		# When the betting window last shut on a pool that is still alive (time.time()), or None. Only
 		# used to grant late payment confirmations a short grace -- see _within_stake_grace.
@@ -255,7 +268,8 @@ class BetplugginApp(AppConfig):
 		await self.context.setting.register(
 			self.setting_quick_bet_amounts,
 			self.setting_min_stake, self.setting_max_stake,
-			self.setting_betting_window, self.setting_closing_warning,
+			self.setting_betting_window_seconds, self.setting_betting_window,
+			self.setting_closing_warning,
 		)
 
 		self.context.signals.listen(mp_signals.map.map_begin, self.map_begin)
@@ -504,6 +518,7 @@ class BetplugginApp(AppConfig):
 	def _cancel_market_close(self):
 		"""Drop the pending auto-close, if any. Safe to call when there isn't one."""
 		task, self.market_close_task = self.market_close_task, None
+		self.market_closes_at = None
 		if task and not task.done():
 			task.cancel()
 
@@ -541,22 +556,39 @@ class BetplugginApp(AppConfig):
 		"""Arm the auto-close for the period being opened. Must be called while holding self.lock."""
 		self._cancel_market_close()
 
-		percent = await self.setting_betting_window.get_value()
-		if not percent or percent <= 0 or percent >= 100:
-			return
-
 		limit = await self._period_time_limit()
-		if not limit:
-			return
 
+		# An explicit duration in seconds wins over the percentage. It's the setting an admin can reason
+		# about without first working out what S_TimeLimit currently is ("betting is open for the first
+		# minute" rather than "for the first 33% of however long the map lasts"), and it's the number
+		# the window actually gets. The percentage stays as the fallback so setups configured that way
+		# keep behaving exactly as before.
+		seconds = await self.setting_betting_window_seconds.get_value()
+		if seconds and seconds > 0:
+			# A window longer than the period itself would simply never fire, so it's capped -- but only
+			# when there *is* a time limit. Without one (untimed modes) the seconds setting is the only
+			# thing that can close the market, which is precisely when it's most useful.
+			delay = min(seconds, limit) if limit else seconds
+		else:
+			percent = await self.setting_betting_window.get_value()
+			if not percent or percent <= 0 or percent >= 100:
+				return
+			if not limit:
+				return
+			delay = limit * percent / 100
+
+		# Remembered so the market window can show how long is left -- see BetMarketView.get_title.
+		self.market_closes_at = time.time() + delay
 		# Fire and forget: this sleeps for most of the map, and _open_market is on the map_begin path.
-		self.market_close_task = asyncio.ensure_future(self._close_market_after(limit * percent / 100))
+		self.market_close_task = asyncio.ensure_future(self._close_market_after(delay))
 
 	async def _close_market_after(self, delay):
 		"""Warn, then shut the betting window mid-period. Cancelled by _cancel_market_close."""
-		# On a very short period the warning would land before betting even opened, so it gives up at
-		# most half the window rather than pushing the close itself later.
-		warning = min(await self.setting_closing_warning.get_value(), delay / 2)
+		# The announced countdown always matches the configured warning ("closes in N seconds" means
+		# exactly N seconds from now) so it stays truthful to what the admin set. It's only ever reduced
+		# below that if the window itself is too short to fit it -- at which point the warning fires
+		# immediately on open, announcing however much time is actually left.
+		warning = min(await self.setting_closing_warning.get_value(), delay)
 
 		await asyncio.sleep(max(delay - warning, 0))
 		if self.market_is_open:
@@ -576,6 +608,7 @@ class BetplugginApp(AppConfig):
 			self.market_open = False
 			self.market_closed_at = time.time()
 		self.market_close_task = None
+		self.market_closes_at = None
 
 		await self.instance.chat(
 			'{}$ff0Betting is now CLOSED for this period. Good luck!'.format(CHAT_PREFIX)
@@ -595,6 +628,12 @@ class BetplugginApp(AppConfig):
 		label = (section or '').lower()
 		if not label or any(final in label for final in FINAL_SCORE_SECTIONS):
 			slot['event'].set()
+			# Resolve right now instead of waiting for map_end: the final `scores` payload lands
+			# right as the podium (chat_time) starts, while map_end only fires once the podium has
+			# already played out and been dismissed -- by then nobody's still looking at it. map_end
+			# still calls _resolve_market as a fallback for the rare case scores never arrive; that
+			# call finds an already-emptied pool and is a no-op.
+			await self._resolve_market('the map', by_map_points=self.scope == Bet.SCOPE_ROUND)
 
 	async def round_end(self, count, **kwargs):
 		"""
