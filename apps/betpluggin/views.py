@@ -117,6 +117,9 @@ class BetListStyleMixin:
 		# The duel orange, the same one the challenge window and the widget's duel band already use, so
 		# the record board is visibly part of the duel and not a fifth unrelated statistics window.
 		'orange': dict(tint='F08A2E12', header='F08A2E1E', line='FFD2A8DD', button='F08A2EFF'),
+		# The one board that measures driving rather than betting, so it gets the one colour that is not
+		# a variation on the others.
+		'purple': dict(tint='8A5CD812', header='8A5CD81E', line='D9C4FFDD', button='8A5CD8FF'),
 	}
 
 	template_name = 'betpluggin/list.xml'
@@ -174,6 +177,9 @@ class BetNavMixin:
 		async def to_duels(player, values, view=None, **kwargs):
 			await self._nav_to(player, BetDuelBoardView)
 
+		async def to_pace(player, values, view=None, **kwargs):
+			await self._nav_to(player, BetPaceView)
+
 		async def to_wallet(player, values, view=None, **kwargs):
 			# Answers in chat, so the window is closed rather than swapped -- otherwise the reply lands
 			# behind the list the player is still staring at.
@@ -189,6 +195,7 @@ class BetNavMixin:
 			('targets', 'Who to bet on', 26, accents['green']['button'], to_targets),
 			('leaderboard', 'Leaderboard', 24, accents['gold']['button'], to_leaderboard),
 			('duels', 'Duel record', 22, accents['orange']['button'], to_duels),
+			('pace', 'Pace', 14, accents['purple']['button'], to_pace),
 			('wallet', 'My stats', 20, '55555FFF', to_wallet),
 		]
 		return [
@@ -1198,6 +1205,72 @@ class BetDuelBoardView(BetListStyleMixin, BetNavMixin, ManualListView):
 				duels=str(entry['duels']),
 				win_rate='{}%'.format(round(entry['duel_win_rate'])),
 				net=net_str,
+			))
+		return rows
+
+
+class BetPaceView(BetListStyleMixin, BetNavMixin, ManualListView):
+	"""
+	Who actually drives fast, read off every race the server has a record of.
+
+	The duel board only knows about duels, and the market boards only know about races somebody put
+	money on. This one counts every race -- live and reconstructed by //raceimport alike -- which makes
+	it the only window that can answer "is this person worth backing" for a driver who has never been
+	backed before.
+
+	The column that decides the order is Rating, not Wins: see `BetplugginApp.get_pace_stats`. And a
+	driver who has not raced enough for that number to mean anything is told so, in their own row, in
+	place of a rank -- the alternative is a public board that reports 1.000 for someone who won a single
+	duel two months ago.
+	"""
+
+	nav_key = 'pace'
+	accent = 'purple'
+	title = 'BetPluggin -- pace'
+	icon_style = 'Icons128x128_1'
+	icon_substyle = 'Rankings'
+
+	fields = [
+		{'name': '#',        'index': 'rank',      'sorting': False, 'searching': False, 'width': 10},
+		{'name': 'Player',   'index': 'nickname',  'sorting': True,  'searching': True,  'width': 40},
+		{'name': 'Rating',   'index': 'rating',    'sorting': False, 'searching': False, 'width': 16},
+		{'name': 'Races',    'index': 'races',     'sorting': False, 'searching': False, 'width': 13},
+		{'name': 'Wins',     'index': 'wins',      'sorting': False, 'searching': False, 'width': 13},
+		{'name': 'Avg place','index': 'avg_place', 'sorting': False, 'searching': False, 'width': 19},
+		{'name': 'Field',    'index': 'avg_field', 'sorting': False, 'searching': False, 'width': 13},
+		{'name': 'Ranked',   'index': 'status',    'sorting': False, 'searching': False, 'width': 32},
+	]
+
+	def __init__(self, app):
+		super().__init__()
+		self.app = app
+		self.manager = app.context.ui
+
+	async def get_data(self):
+		rows = []
+		rank = 0
+		for entry in await self.app.get_pace_stats():
+			rated = entry['missing'] == 0
+			if rated:
+				rank += 1
+
+			rating = '{:.3f}'.format(entry['rating'])
+			rows.append(dict(
+				# Provisional drivers are listed but not numbered: a rank next to a rating that is not yet
+				# a measurement is the exact claim this board is trying not to make.
+				rank=str(rank) if rated else '$888-$z',
+				nickname=entry['nickname'],
+				rating=rating if rated else '$888{}$z'.format(rating),
+				races=str(entry['races']),
+				wins=str(entry['wins']),
+				avg_place='{:.1f}'.format(entry['avg_position']),
+				avg_field='{:.1f}'.format(entry['avg_field']),
+				status=(
+					'$0f0ranked$z' if rated
+					else '$888{} more race{}$z'.format(
+						entry['missing'], '' if entry['missing'] == 1 else 's'
+					)
+				),
 			))
 		return rows
 

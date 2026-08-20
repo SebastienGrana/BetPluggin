@@ -38,6 +38,7 @@ from pyplanet.apps.core.trackmania.callbacks import (
 	warmup_end as tm_warmup_end_signal,
 	warmup_start as tm_warmup_start_signal,
 )
+from peewee import fn
 from pyplanet.contrib.command import Command
 from pyplanet.contrib.setting import Setting
 
@@ -45,7 +46,8 @@ from .duel import DuelManager
 from .models import Bet, RaceResult
 from .raceimport import DEFAULT_GAP_MINUTES, RaceImporter
 from .views import (
-	BetWidget, BetMarketView, BetLeaderboardView, BetResultView, BetTargetsView, BetDuelBoardView
+	BetWidget, BetMarketView, BetLeaderboardView, BetResultView, BetTargetsView, BetDuelBoardView,
+	BetPaceView
 )
 
 # Modes (matched case-insensitively against the mode script name, e.g. "Trackmania/TM_Rounds_Online")
@@ -90,6 +92,13 @@ FINAL_SCORE_SECTIONS = ('endmap', 'endmatch')
 # How long after the betting window shuts a stake whose payment popup was already open may still
 # confirm and join the pool. See _within_stake_grace.
 STAKE_CONFIRM_GRACE_SECONDS = 20
+
+# Races a driver needs before their pace rating is treated as a measurement rather than an anecdote.
+# One race gives 1.000 or 0.000 -- a number that looks like a verdict and is nothing of the kind, and
+# /pace is public, so that number would be shown to everyone. Below this bar the board still shows the
+# rating, but marked with how many races are still missing, and sorted underneath the drivers who have
+# crossed it. Thirty is the same bar docs/conception-paris-position.md sets for pricing position bets.
+PACE_MIN_RACES = 30
 
 # Prefix on every BetPluggin chat line. `$z$s` resets whatever formatting the previous message left
 # behind (nicknames routinely leave colours open), so our messages are recognisable at a glance in a
@@ -384,6 +393,11 @@ class BetplugginApp(AppConfig):
 				description='Back one of the two players in the running duel. Usage: /duelbet <login> <amount>'
 			).add_param(name='login', type=str, required=False, help='Which duellist you are backing.')
 			 .add_param(name='amount', type=int, required=False, help='Amount of planets to bet.'),
+
+			Command(
+				command='pace', aliases=['form', 'racetop'], target=self.chat_pace,
+				description='Who actually drives fast here: every race on record, live and imported.'
+			),
 
 			Command(
 				command='open', namespace='bet', target=self.chat_admin_open_betting, admin=True,
@@ -2121,6 +2135,74 @@ class BetplugginApp(AppConfig):
 		leaderboard.sort(key=lambda e: e['net'], reverse=True)
 		return leaderboard[:limit] if limit else leaderboard
 
+	# ------------------------------------------------------------------
+	# Track record: what the results table says about who actually drives fast
+	# ------------------------------------------------------------------
+
+	async def get_pace_stats(self, limit=100):
+		"""
+		Per-driver form, read off RaceResult -- live races and imported ones together.
+
+		Every other board in this plugin measures betting. This one measures driving, which is the thing
+		bets are placed *about*, and it is the first window on the data the position odds of
+		docs/conception-paris-position.md will eventually be priced from. Showing it now is also how the
+		import gets checked by people who were there: a driver who knows they never beat anyone will say
+		so faster than any test will.
+
+		Rated on finishing position relative to the field, not on wins:
+
+			1 - (position - 1) / (field_size - 1)
+
+		1.0 is winning every time, 0.0 is finishing last every time, and coming second in a field of ten
+		counts for far more than winning a duel -- which counting wins would get exactly backwards.
+
+		Aggregated by the database rather than in Python on purpose. An imported history runs to millions
+		of rows, and this is a public command anyone can fire at the podium; pulling the table across to
+		count it would be the one query that takes the server down.
+		"""
+		# 1 when there was nobody to be measured against, so a two-driver field is the only case where a
+		# win still scores 1.0 -- the field size column is what tells those apart afterwards.
+		rating = fn.IF(
+			RaceResult.field_size > 1,
+			1 - (RaceResult.position - 1) / (RaceResult.field_size - 1),
+			1.0
+		)
+
+		rows = await RaceResult.execute(
+			RaceResult.select(
+				Player.login.alias('login'),
+				Player.nickname.alias('nickname'),
+				fn.COUNT(RaceResult.id).alias('races'),
+				fn.SUM(RaceResult.position == 1).alias('wins'),
+				# coerce(False) or peewee runs the average back through IntegerField's converter and
+				# truncates it: an average field size of 2.5 comes back as 2, and the column that exists
+				# to say how hard the races were quietly rounds itself away.
+				fn.AVG(RaceResult.position).coerce(False).alias('avg_position'),
+				fn.AVG(RaceResult.field_size).coerce(False).alias('avg_field'),
+				fn.AVG(rating).alias('rating'),
+			).join(Player).group_by(Player.id, Player.login, Player.nickname).dicts()
+		)
+
+		stats = []
+		for row in rows:
+			races = int(row['races'])
+			stats.append(dict(
+				login=row['login'],
+				nickname=row['nickname'] or row['login'],
+				races=races,
+				wins=int(row['wins'] or 0),
+				avg_position=float(row['avg_position']),
+				avg_field=float(row['avg_field']),
+				rating=float(row['rating']),
+				# What the board has to say out loud rather than let a 1.000 imply. Zero once rated.
+				missing=max(0, PACE_MIN_RACES - races),
+			))
+
+		# Rated drivers first, then the provisional ones -- both by rating. Sorting them together would
+		# put whoever won their single race above everyone who has driven all season.
+		stats.sort(key=lambda e: (e['missing'] == 0, e['rating'], e['races']), reverse=True)
+		return stats[:limit] if limit else stats
+
 	@staticmethod
 	def format_streak(streak):
 		if streak > 0:
@@ -2481,6 +2563,41 @@ class BetplugginApp(AppConfig):
 		view = BetLeaderboardView(self)
 		await view.display(player=player)
 
+	async def chat_pace(self, player, **kwargs):
+		"""
+		Open the pace board, and say in chat what the board itself can only imply.
+
+		Whether anybody is rated at all is the one thing a player needs before reading a single row, and
+		it is not visible from the top of the list -- an unrated board looks exactly like a rated one
+		until you notice every rank is a dash. So it is said here, with the number of races still
+		missing, rather than left to be worked out.
+		"""
+		stats = await self.get_pace_stats()
+		if not stats:
+			await self.instance.chat(
+				'{}$aaaNo race has been recorded yet — the pace board fills up on its own as maps are '
+				'played.'.format(CHAT_PREFIX), player
+			)
+			return
+
+		rated = [entry for entry in stats if not entry['missing']]
+		if not rated:
+			closest = min(stats, key=lambda e: e['missing'])
+			await self.instance.chat(
+				'{}$ff0Nobody is ranked yet: it takes $fff{}$ff0 races. Closest is $fff{}$ff0, '
+				'$fff{}$ff0 more to go.'.format(
+					CHAT_PREFIX, PACE_MIN_RACES, closest['nickname'],
+					plural(closest['missing'], 'race')
+				), player
+			)
+			await self.instance.chat(
+				'{}$aaaEveryone is listed meanwhile, but a rating on that few races is an accident, not '
+				'a level.'.format(CHAT_PREFIX), player
+			)
+
+		view = BetPaceView(self)
+		await view.display(player=player)
+
 	async def chat_duel_board(self, player, **kwargs):
 		if not await self.get_duel_stats():
 			await self.instance.chat(
@@ -2624,6 +2741,7 @@ class BetplugginApp(AppConfig):
 		await self.instance.chat('$fff/decline$ff0 (or /refuse) - Turn down the duel you were challenged to. Nothing is charged.', player)
 		await self.instance.chat('$fff/duelbet <login> <amount>$ff0 (or /back) - Back one of the two players in the running duel. One-click buttons appear on the widget while a duel runs.', player)
 		await self.instance.chat('$fff/duels$ff0 (or /duel list, /dueltop) - The duel record board: who has won the most duels here.', player)
+		await self.instance.chat('$fff/pace$ff0 (or /form, /racetop) - Who actually drives fast: every race on record, rated by finishing position against the field.', player)
 
 	async def chat_help_admin(self, player, **kwargs):
 		await self.instance.chat('$ff0--- BetPluggin Admin Commands ---', player)
