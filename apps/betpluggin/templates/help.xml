@@ -1,0 +1,59 @@
+<!--
+  BetPluggin's help window.
+
+  Same card geometry as list.xml on purpose: same outer frame, same 220x137 card, same title bar with
+  the accent rule under it, same close button in the same corner. Help that arrives in a differently
+  shaped window reads as a different program; this one is meant to feel like one more BetPluggin window,
+  because the "?" that opens it sits in the title bar of the other six.
+
+  Two panes: a fixed sidebar of topics on the left, and the page itself on the right. Everything in the
+  right-hand pane is positioned in Python (BetHelpView.get_per_player_data) and arrives here as a flat
+  list of x, y, width, size, text and colour. Wrapping copy needs to measure visible width with the
+  Trackmania formatting codes discounted, which Jinja cannot do and help.py's wrap() can.
+
+  The manialink wrapper is added by PyPlanet's UI manager; templates only provide the body.
+-->
+<frame pos="0 17" z-index="150">
+  <quad pos="0 62.5" size="220 137" z-index="-50" halign="center" valign="top" style="Bgs1InRace" substyle="BgCardList"/>
+  <quad pos="0 62.5" size="220 137" z-index="-48" halign="center" valign="top" bgcolor="{{ accent_tint|default('00000000', true) }}"/>
+
+  <quad pos="0 61.5" size="218 11" z-index="-49" halign="center" valign="top" style="Bgs1InRace" substyle="BgCardList"/>
+  <quad pos="0 61.5" size="218 11" z-index="-47" halign="center" valign="top" bgcolor="{{ accent_header|default('00000000', true) }}"/>
+  <quad pos="0 50.8" size="218 0.6" z-index="-46" halign="center" valign="top" bgcolor="{{ accent_line|default('FFFFFFDD', true) }}"/>
+
+  <quad pos="-108 60.5 0" size="9 9" z-index="1" style="Icons128x128_1" substyle="Advanced"/>
+  <label pos="-97 57.8 0" size="190 7" z-index="2" text="$o{{ title }}" textsize="2.5"
+         textcolor="{{ accent_line|default('FFFFFFDD', true) }}" halign="left"/>
+
+  <quad pos="99 59.5 0" size="7 7" z-index="1" style="Icons128x32_1" substyle="Close" action="{{ id }}__close"/>
+
+  <!-- Sidebar. Every topic is always listed, including the one being read: a help menu that hides where
+       you are makes you count the entries to work out where you are. The current one keeps its slot and
+       is simply lit up. -->
+  <frame pos="-107 47" z-index="1">
+    <quad pos="-2 2" size="44 100" z-index="-1" bgcolor="00000055"/>
+    {% for item in sidebar %}
+      {% if item.heading %}
+        <label pos="0 {{ item.ty }}" size="42 4" z-index="1" text="$o{{ item.label }}" textsize="1"
+               textcolor="8A8AA8FF" valign="center2"/>
+      {% else %}
+        <quad pos="0 {{ item.y }}" size="40 6.6" z-index="0" bgcolor="{{ item.bgcolor }}"
+              {% if not item.active %}action="{{ id }}__topic_{{ item.index }}"{% endif %}/>
+        <label pos="3 {{ item.ty }}" size="36 5" z-index="1" text="{{ item.label }}" textsize="1.3"
+               textcolor="{{ item.textcolor }}" valign="center2"
+               {% if not item.active %}action="{{ id }}__topic_{{ item.index }}"{% endif %}/>
+      {% endif %}
+    {% endfor %}
+  </frame>
+
+  <!-- The page. Lines are pre-positioned; nothing here decides where anything goes. -->
+  <frame pos="-61 47" z-index="1">
+    {% for line in lines %}
+      <label pos="{{ line.x }} {{ line.y }}" size="{{ line.width }} 5" z-index="1" text="{{ line.text }}"
+             textsize="{{ line.size }}" textcolor="{{ line.color }}" valign="center2"/>
+    {% endfor %}
+  </frame>
+
+  <label pos="0 -70 0" size="200 4" z-index="2" halign="center" textsize="1"
+         textcolor="7E7EA0FF" text="{{ footer }}"/>
+</frame>

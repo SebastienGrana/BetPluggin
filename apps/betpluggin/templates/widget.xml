@@ -26,8 +26,16 @@
   <quad pos="0 -0.35" z-index="2" size="1 4.65" bgcolor="{{ status_color }}"/>
   <label pos="2.6 -2.6" z-index="2" size="6.4 3" textfont="RajdhaniMono" textsize="1.6" valign="center"
          textcolor="FFFFFFFF" text="BETS"/>
-  <label pos="9.8 -2.7" z-index="2" size="19.8 2.6" textsize="0.85" valign="center" textcolor="7E7EA0FF"
+  <!-- 19.8 wide until the help button below took the last 2.6 of it. The favourite is one nickname and
+       fits; if it ever stops fitting, take the room from the gap, not from the "?". -->
+  <label pos="9.8 -2.7" z-index="2" size="17.2 2.6" textsize="0.85" valign="center" textcolor="7E7EA0FF"
          text="{{ favourite }}"/>
+  <!-- The way in for somebody who has just connected and has no idea what any of this is. It sits on the
+       widget rather than only inside the windows on purpose: the widget is the one part of BetPluggin
+       that is on screen without being asked for. -->
+  <quad pos="27.2 -1.4" z-index="2" size="2.6 2.6" bgcolor="FFFFFF1A" action="{{ id }}__open_help"/>
+  <label pos="28.5 -2.7" z-index="3" size="2.6 2.6" textsize="0.9" halign="center" valign="center"
+         textcolor="9C9CC0FF" text="?" action="{{ id }}__open_help"/>
   <quad pos="30.4 -1.5" z-index="2" size="8.4 2.4" bgcolor="{{ status_color }}"/>
   <label pos="34.6 -2.7" z-index="3" size="8.4 2.4" textsize="0.95" halign="center" valign="center"
          textcolor="0A0A14FF" text="{{ status }}"/>

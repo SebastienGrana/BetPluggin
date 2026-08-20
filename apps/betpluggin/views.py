@@ -14,6 +14,7 @@ from pyplanet.views.generics.list import ManualListView
 from pyplanet.views.generics.widget import WidgetView
 from pyplanet.views.template import TemplateView
 
+from .help import NAV_TOPICS, TOPICS, topic_index, wrap
 from .models import Bet
 
 
@@ -244,6 +245,18 @@ class BetNavMixin:
 
 	nav_key = None
 
+	def __init__(self, *args, **kwargs):
+		# Wires the "?" that list.xml draws in every title bar, beside Refresh and Close. It could not go
+		# in the navigation bar: the six buttons already fill it to within 2.5 units (see get_buttons),
+		# and the title bar is where a player looking for a way out of a window is already looking.
+		super().__init__(*args, **kwargs)
+		self.subscribe('list_button_help', self.action_help)
+
+	async def action_help(self, player, action, values, **kwargs):
+		# Opens the help *on this window's page*, not on its front page. A help button that always lands
+		# somewhere general is one people press once.
+		await self.app.help_view.display(player=player, topic=NAV_TOPICS.get(self.nav_key))
+
 	async def _nav_to(self, player, factory):
 		# Close first: PyPlanet keeps both manialinks alive otherwise, and the one underneath stays
 		# clickable through the new window.
@@ -346,6 +359,7 @@ class BetWidget(WidgetView):
 		self.subscribe('open_targets', self.action_open_targets)
 		self.subscribe('open_leaderboard', self.action_open_leaderboard)
 		self.subscribe('open_wallet', self.action_open_wallet)
+		self.subscribe('open_help', self.action_open_help)
 		self.subscribe('back_challenger', self.action_back_challenger)
 		self.subscribe('back_opponent', self.action_back_opponent)
 
@@ -629,6 +643,11 @@ class BetWidget(WidgetView):
 	async def action_open_wallet(self, player, action, values, **kwargs):
 		await self.app.chat_my_stats(player)
 
+	async def action_open_help(self, player, action, values, **kwargs):
+		# The front page, not a window page: whoever presses the "?" on the widget is usually asking what
+		# any of this is, not what one particular column means.
+		await self.app.help_view.display(player=player)
+
 	async def _back_duel_side(self, player, side):
 		# The duel is re-read here rather than trusted from the render: a widget is a picture of a moment
 		# that may be several seconds old, and the duel it showed can have been resolved, refunded or
@@ -732,6 +751,214 @@ class BetResultView(TemplateView):
 		# destroy() hides for everyone *and* drops the manialink from the UI manager's registry. Without
 		# it every resolution would leak one more dead manialink for the life of the process.
 		await self.destroy()
+
+
+class BetHelpView(TemplateView):
+	"""
+	The help window: the rules, the duel rules, every command, and one page per list window.
+
+	It exists because the help used to be fourteen lines of chat on a server whose chat buffer holds
+	eight. Half of it scrolled away before it could be read, and the half that survived was the half
+	nobody needed. A window holds all of it at once, stays up while you look at the thing it describes,
+	and -- unlike chat -- can be opened again by whoever needs it without spamming the people who don't.
+
+	One instance for the whole server, made once in on_start beside the widget, with each player's
+	current page kept in `topics_by_login`. A view per opening would be tidier to read and would churn
+	manialink ids on every click of the sidebar; this way the window is one manialink that changes what
+	it shows, which is also what makes switching pages feel instant.
+
+	All the text lives in help.py. What this class does is fill the {placeholders} in it from the
+	settings that are actually configured, and turn the result into positioned lines -- wrapping has to
+	measure visible width with Trackmania's formatting codes discounted, which the template cannot do.
+	"""
+
+	template_name = 'betpluggin/help.xml'
+
+	# The content pane. Coordinates are relative to the frame the template puts at x=-61 y=47, so the
+	# first line sits at 0 and the pane runs down to about -115 before it reaches the footer.
+	CONTENT_TOP = 0.0
+	CONTENT_DEPTH = 115.0
+	CONTENT_WIDTH = 166
+	LINE_HEIGHT = 4.0
+	BULLET_INDENT = 3.4
+
+	# Visible characters per line. The pane is 166 units and body text is textsize 1.2, which runs about
+	# 1.34 units per character (BetListStyleMixin measures 1.45 at textsize 1.3) -- so ~124 fit, and the
+	# few left over are the margin for a page that turns out to be wider than it measured.
+	LINE_CHARS = 118
+	BULLET_CHARS = 114
+
+	# For the pages that are not about one particular window. The six that are borrow the colour of the
+	# window they describe, so the help card and the card behind it visibly match.
+	NEUTRAL_ACCENT = dict(tint='6A6A9012', header='6A6A901E', line='C8C8E6DD', button='5A5A78FF')
+
+	def __init__(self, app):
+		super().__init__()
+		self.app = app
+		self.manager = app.context.ui
+		self.id = 'betpluggin__help'
+
+		# login -> topic key. Two players can read two different pages at once; the window is per-player
+		# anyway, so there is no reason for one of them to move the other's.
+		self.topics_by_login = dict()
+
+		for index in range(len(TOPICS)):
+			self.subscribe('topic_{}'.format(index), self._topic_handler(index))
+		self.subscribe('close', self.action_close)
+
+	def _topic_handler(self, index):
+		async def handler(player, action, values, **kwargs):
+			await self.display(player=player, topic=TOPICS[index]['key'])
+		return handler
+
+	async def action_close(self, player, action, values, **kwargs):
+		await self.hide(player_logins=[player.login])
+
+	async def display(self, player=None, topic=None, **kwargs):
+		"""
+		Show the window to one player, optionally jumping to a page.
+
+		Overrides TemplateView.display, which takes a list of logins: every caller here has a player and
+		one page in mind, and the list form invites passing a player object where a login goes.
+		"""
+		if player is None:
+			return
+		login = player.login if hasattr(player, 'login') else player
+		if topic:
+			self.topics_by_login[login] = topic
+		self.topics_by_login.setdefault(login, TOPICS[0]['key'])
+		return await super().display(player_logins=[login])
+
+	async def get_all_player_data(self, logins):
+		# Built once per render rather than once per reader: the numbers come from server settings, so
+		# they are the same for everybody looking.
+		context = await self._build_context()
+		return {
+			login: self._page(self.topics_by_login.get(login, TOPICS[0]['key']), context)
+			for login in logins
+		}
+
+	async def _build_context(self):
+		"""The values the copy in help.py leaves blank, read from what this server is actually set to."""
+		app = self.app
+		window_seconds = await app.setting_betting_window_seconds.get_value()
+		window_percent = await app.setting_betting_window.get_value()
+
+		if app.scope == Bet.SCOPE_ROUND:
+			window_line = ('In the mode running now, betting is open for the whole warm-up and shuts the '
+						   'moment the warm-up ends.')
+			settle_line = 'At the end of the map, whoever scored the most points has won.'
+		else:
+			if window_seconds and window_seconds > 0:
+				window_line = ('Betting opens when the map starts and shuts $fff{} seconds$ccc '
+									 'later.'.format(window_seconds))
+			elif window_percent in (0, 100):
+				window_line = 'Betting is open for the whole map, right up to the finish.'
+			else:
+				window_line = ('Betting opens when the map starts and shuts once $fff{}%$ccc of the map time '
+									 'has gone.'.format(window_percent))
+			settle_line = 'Whoever finishes first has won.'
+
+		return dict(
+			min_stake=await app.setting_min_stake.get_value(),
+			max_stake=await app.setting_max_stake.get_value(),
+			max_bets=app.MAX_BETS_PER_PERIOD,
+			quick=', '.join(str(amount) for amount in await app.get_quick_bet_amounts()),
+			duel_min=await app.setting_duel_min_stake.get_value(),
+			duel_max=await app.setting_duel_max_stake.get_value(),
+			duel_seconds=await app.setting_duel_accept_seconds.get_value(),
+			warn_seconds=await app.setting_closing_warning.get_value(),
+			grace=app.STAKE_CONFIRM_GRACE_SECONDS,
+			pace_min=app.PACE_MIN_RACES,
+			window_line=window_line,
+			settle_line=settle_line,
+		)
+
+	def _page(self, key, context):
+		topic = TOPICS[topic_index(key)]
+		accent = BetListStyleMixin.ACCENTS.get(topic['accent'], self.NEUTRAL_ACCENT)
+		return dict(
+			title='Help -- {}'.format(topic['label']),
+			accent_tint=accent['tint'],
+			accent_header=accent['header'],
+			accent_line=accent['line'],
+			sidebar=self._sidebar(topic['key']),
+			lines=self._lines(topic, context, accent['line']),
+			footer='Pick a topic on the left.  Every BetPluggin window has a $fff?$z next to its close '
+				   'button that opens this help on that window.',
+		)
+
+	def _sidebar(self, current):
+		"""The topic list, grouped. Every topic is always shown, including the one being read."""
+		entries = []
+		y = 0.0
+		group = None
+		for index, topic in enumerate(TOPICS):
+			if topic['group'] != group:
+				group = topic['group']
+				if index:
+					y -= 2.0
+				entries.append(dict(heading=True, label=group.upper(), ty=y - 2.5, index=index))
+				y -= 5.5
+
+			active = topic['key'] == current
+			colour = BetListStyleMixin.ACCENTS.get(topic['accent'], self.NEUTRAL_ACCENT)['button']
+			entries.append(dict(
+				heading=False,
+				index=index,
+				label=topic['label'],
+				y=y,
+				ty=y - 3.3,
+				active=active,
+				# Same hue either way, so the sidebar reads as one list; the page you are on is simply the
+				# one that is lit. Faded-but-present beats removed -- see BetNavMixin's docstring.
+				bgcolor=colour[:6] + ('FF' if active else '30'),
+				textcolor='FFFFFFFF' if active else 'B4B4C8FF',
+			))
+			y -= 7.4
+		return entries
+
+	def _lines(self, topic, context, heading_colour):
+		"""Turn a topic's blocks into positioned labels. Nothing downstream decides where anything goes."""
+		lines = []
+		y = self.CONTENT_TOP
+		first = True
+
+		def add(text, x, width, size, colour):
+			nonlocal y
+			lines.append(dict(x=x, y=y, width=width, size=size, text=text, color=colour))
+			y -= self.LINE_HEIGHT
+
+		for block in topic['blocks']:
+			kind = block[0]
+			if kind == 'gap':
+				y -= 2.5
+				continue
+
+			text = block[1].format(**context)
+			if kind == 'h':
+				if not first:
+					y -= 3.2
+				lines.append(dict(x=0, y=y, width=self.CONTENT_WIDTH, size='1.35',
+								  text='$o' + text, color=heading_colour))
+				y -= 5.4
+			elif kind == 'b':
+				# Hanging indent: the dash sticks out to the left of the wrapped text, so a bullet that
+				# runs to three lines still reads as one item.
+				for position, line in enumerate(wrap(text, self.BULLET_CHARS)):
+					if position == 0:
+						add('$fff-$ccc ' + line, 0, self.CONTENT_WIDTH, '1.2', 'CCCCCCFF')
+					else:
+						add(line, self.BULLET_INDENT, self.CONTENT_WIDTH - self.BULLET_INDENT,
+							'1.2', 'CCCCCCFF')
+				y -= 0.9
+			else:
+				for line in wrap(text, self.LINE_CHARS):
+					add(line, 0, self.CONTENT_WIDTH, '1.2', 'CCCCCCFF')
+				y -= 1.5
+			first = False
+
+		return lines
 
 
 class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):

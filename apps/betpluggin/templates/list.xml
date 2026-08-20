@@ -29,10 +29,17 @@
 
   <quad pos="-108 60.5 0" size="9 9" z-index="1" style="{{ icon_style }}" substyle="{{ icon_substyle }}"/>
   <label pos="-97 57.8 0" size="190 7" z-index="2" text="$o{{ title }}" textsize="2.5" textcolor="{{ accent_line|default('FFFFFFF', true) }}" halign="left"/>
-  <label pos="92 57.6 0" size="72 5" text="$o({{ count }} items)" textsize="1.5" halign="right"/>
+  <!-- BetPluggin: shifted left from x=92 to make room for the help button below. -->
+  <label pos="84 57.6 0" size="64 5" text="$o({{ count }} items)" textsize="1.5" halign="right"/>
 
   <quad pos="99 59.5 0" size="7 7" z-index="1" style="Icons128x32_1" substyle="Close" action="{{ id }}__list_button_close"/>
   <quad pos="94 59 0" size="6 6" z-index="1" style="Icons64x64_1" substyle="Refresh" action="{{ id }}__list_button_refresh" />
+  <!-- BetPluggin: opens the help window on the page about *this* window (BetNavMixin.action_help).
+       Drawn rather than styled: the icon sets ship no question mark, and a "?" in the corner where
+       every other program puts one needs no explaining. -->
+  <quad pos="87 59 0" size="6 6" z-index="1" bgcolor="FFFFFF22" action="{{ id }}__list_button_help"/>
+  <label pos="90 56 0" size="6 6" z-index="2" text="$o?" textsize="1.5" halign="center" valign="center2"
+         textcolor="{{ accent_line|default('FFFFFFDD', true) }}" action="{{ id }}__list_button_help"/>
 
   {% if provide_search or (buttons is defined and (buttons | length > 0)) %}
     <frame pos="-109 49.5" id="list_search_frame">

@@ -45,9 +45,10 @@ from pyplanet.contrib.setting import Setting
 from .duel import DuelManager
 from .models import Bet, RaceResult
 from .raceimport import DEFAULT_GAP_MINUTES, RaceImporter
+from .help import TOPIC_KEYS
 from .views import (
 	BetWidget, BetMarketView, BetLeaderboardView, BetResultView, BetTargetsView, BetDuelBoardView,
-	BetPaceView, BetMyStatsView
+	BetPaceView, BetMyStatsView, BetHelpView
 )
 
 # Modes (matched case-insensitively against the mode script name, e.g. "Trackmania/TM_Rounds_Online")
@@ -133,6 +134,12 @@ class BetplugginApp(AppConfig):
 	# outward to the module.
 	CHAT_PREFIX = CHAT_PREFIX
 
+	# Same trick, same reason: the help window quotes both of these at the player ("answer the popup
+	# within 20 seconds", "30 races before you are ranked"), and copying the numbers into help.py would
+	# make the help lie the first time either is tuned here.
+	STAKE_CONFIRM_GRACE_SECONDS = STAKE_CONFIRM_GRACE_SECONDS
+	PACE_MIN_RACES = PACE_MIN_RACES
+
 	def __init__(self, *args, **kwargs):
 		super().__init__(*args, **kwargs)
 		self.lock = asyncio.Lock()
@@ -171,6 +178,10 @@ class BetplugginApp(AppConfig):
 		self.results_recorded_for = None
 
 		self.widget = None
+
+		# One shared help window for the whole server (see BetHelpView). Built in on_start with the
+		# widget, because the "?" on the widget and the "?" in every list window both open it.
+		self.help_view = None
 
 		# The result card from the period that just resolved, kept alive past its podium showing so
 		# map_begin can replay it on the next map (see RESULT_REPLAY_SECONDS). The task is the podium
@@ -474,6 +485,22 @@ class BetplugginApp(AppConfig):
 				command='help', target=self.chat_help_public,
 				description='Show BetPluggin public commands help.'
 			).add_param(name='topic', type=str, required=False, help='Topic (e.g., "bet") or leave empty.'),
+
+			# `/bet help`. It was missing until now, which is the kind of gap you only find by watching
+			# someone use the plugin: the welcome message says "/help bet", every other feature is a
+			# `/bet <something>`, so people typed `/bet help` and got a usage line for `/bet <login>`.
+			# Namespaced commands win over the flat `/bet`, the same way `/bet market` already does.
+			Command(
+				command='help', namespace='bet', target=self.chat_help_public,
+				description='Open the BetPluggin help window.'
+			).add_param(name='topic', type=str, required=False, help='Page to open on, or leave empty.'),
+
+			# The server is French-speaking. The window itself is in English (so is the rest of the game),
+			# but nobody should have to guess the English word for "aide" to find out where the help is.
+			Command(
+				command='aide', target=self.chat_help_public,
+				description='Open the BetPluggin help window.'
+			).add_param(name='topic', type=str, required=False, help='Page to open on, or leave empty.'),
 		)
 
 		await self.instance.permission_manager.register(
@@ -508,6 +535,7 @@ class BetplugginApp(AppConfig):
 		self.context.signals.listen(tm_warmup_end_signal, self.warmup_end)
 
 		self.widget = BetWidget(self)
+		self.help_view = BetHelpView(self)
 
 		# The commands that cut a map short, lengthen it, or freeze it -- the admin ones an admin types,
 		# and the player ones that get there by chat vote. Not signals: there aren't any for these.
@@ -2901,27 +2929,30 @@ class BetplugginApp(AppConfig):
 		)
 
 	async def chat_help_public(self, player, data=None, **kwargs):
-		topic = data.topic if data and hasattr(data, 'topic') and data.topic else None
-		if topic and topic.lower() != 'bet':
-			await self.instance.chat('$f00Unknown help topic. Use /help bet for betting commands.', player)
-			return
+		"""
+		Open the help window. `/help`, `/help bet`, `/bet help` and `/aide` all arrive here.
 
-		# Grouped the way the commands themselves are: money under /bet, driving on its own. A player who
-		# remembers only "/bet" can find the first half, and only "/duel" the second.
-		await self.instance.chat('$ff0--- Betting: everything starts with $fff/bet$ff0 ---', player)
-		await self.instance.chat('$fff/bet <login> <amount>$ff0 - Bet planets on a player winning the current period.', player)
-		await self.instance.chat('$fff/bet market$ff0 (or /market, /odds) - Open the betting window: live multipliers and one-click bets.', player)
-		await self.instance.chat('$fff/bet mine$ff0 (or /mybet, /bets) - Show your active bet(s) for the current period.', player)
-		await self.instance.chat('$fff/bet wallet$ff0 (or /wallet, /stats) - My stats: your betting, duels and driving, each next to the server record.', player)
-		await self.instance.chat('$fff/bet top$ff0 (or /bettop) - Top bettors: who has made the most planets betting here.', player)
-		await self.instance.chat('$fff/bet targets$ff0 (or /targets, /cotes) - Best bets: who is worth betting on, and what backing them has paid.', player)
-		await self.instance.chat('$ff0--- Driving: duels and pace ---', player)
-		await self.instance.chat('$fff/duel <login> <amount>$ff0 - Challenge a player: whoever finishes ahead takes the stake. Also from the $fffDuel$ff0 button in /bet market.', player)
-		await self.instance.chat('$fff/accept <amount>$ff0 - Accept the duel you were challenged to (or use the popup window).', player)
-		await self.instance.chat('$fff/decline$ff0 (or /refuse) - Turn down the duel you were challenged to. Nothing is charged.', player)
-		await self.instance.chat('$fff/duelbet <login> <amount>$ff0 (or /back) - Back one of the two players in the running duel. One-click buttons appear on the widget while a duel runs.', player)
-		await self.instance.chat('$fff/duels$ff0 (or /duel list, /dueltop) - Top duellists: who has won the most duels here.', player)
-		await self.instance.chat('$fff/pace$ff0 (or /form, /racetop) - Top drivers: who actually drives fast, rated by finishing position against the field.', player)
+		This printed fourteen lines of chat until now. The chat buffer holds eight or ten, so the first
+		half had scrolled off the screen before the second half was written -- and a player who wanted to
+		re-read one line had to spam the whole thing again in front of everybody. The window holds all of
+		it at once, stays up while you look at what it describes, and closes when it has been read.
+
+		An unknown topic opens the front page rather than erroring: somebody typing /help followed by a
+		word is asking for help, and answering that with "unknown topic" is a strange thing to do.
+		"""
+		topic = data.topic if data and hasattr(data, 'topic') and data.topic else None
+		topic = topic.lower() if topic else None
+		if topic not in TOPIC_KEYS:
+			topic = None
+
+		if self.help_view:
+			await self.help_view.display(player=player, topic=topic)
+
+		await self.instance.chat(
+			'{}$ff0Help is open on your screen -- the rules, the duels, and every command. Type '
+			'$fff/bet help$ff0 to bring it back, or click the $fff?$ff0 in the corner of any '
+			'BetPluggin window.'.format(CHAT_PREFIX), player
+		)
 
 	async def chat_help_admin(self, player, **kwargs):
 		await self.instance.chat('$ff0--- BetPluggin Admin Commands ---', player)
