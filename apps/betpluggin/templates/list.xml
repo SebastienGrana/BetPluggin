@@ -41,21 +41,36 @@
       <quad pos="0 0" size="218 8.5" z-index="-49" bgcolor="{{ accent_header|default('00000000', true) }}"/>
       {% if provide_search %}
         {% block toolbar_search %}
-      <entry pos="2 -4.25" size="80 6" z-index="2" default="{{ search|default('Search...', True) }}"
+      <!-- BetPluggin: upstream's search box is 80 units wide. The navigation bar below grew to six
+           buttons (141 units, laid out from x=215.5 leftward), and 80 + 141 does not fit in 218 -- the
+           leftmost button landed on top of the magnifier. What is typed here is a player nickname, so
+           52 units is plenty, and the bar gets the room it needs without shortening any label. -->
+      <entry pos="2 -4.25" size="52 6" z-index="2" default="{{ search|default('Search...', True) }}"
              focusareacolor1="0003" name="list_search_field" selecttext="1" textsize="1.6"
              focusareacolor2="FFF2" scriptevents="1" valign="center" />
-      <quad pos="83 -1.35" size="6 6" bgcolor="FFFA" style="Icons64x64_1" substyle="Maximize" action="{{ id }}__list_button_search" />
+      <quad pos="55 -1.35" size="6 6" bgcolor="FFFA" style="Icons64x64_1" substyle="Maximize" action="{{ id }}__list_button_search" />
         {% endblock %}
       {% endif %}
 
       {% for button in buttons %}
         <!-- BetPluggin: each navigation button wears the colour of the window it leads to, at full
              strength. The washes above are deliberately faint; these are the one thing on the card that
-             is supposed to catch the eye, so they get a solid block instead of a tint. -->
+             is supposed to catch the eye, so they get a solid block instead of a tint.
+
+             `button.disabled` is the button for the window you are already in. It stays in place -- the
+             bar used to drop it, which shifted every other button sideways from one window to the next,
+             so nothing was ever where the eye had learnt to look. Drawn faded, with no `action` and no
+             focus area at all: it cannot be clicked, and it does not light up under the cursor either,
+             which is what tells you it is dead before you try. -->
         <quad pos="{{ button.right - (button.width / 2) }} -1.9" size="{{ button.width }} 4.9" z-index="-1"
               bgcolor="{{ button.colour|default('00000000', true) }}"/>
-        <label pos="{{ button.right }} -4.35" size="{{ button.width }} 4.9" text="$o$fff{{ button.title }}" textsize="1.3"
-                   valign="center2" halign="center" action="{{ id }}__list_buttons_{{ loop.index0 }}" focusareacolor1="0005" focusareacolor2="0007" />
+        {% if button.disabled %}
+          <label pos="{{ button.right }} -4.35" size="{{ button.width }} 4.9" text="$o$999{{ button.title }}" textsize="1.3"
+                     valign="center2" halign="center" />
+        {% else %}
+          <label pos="{{ button.right }} -4.35" size="{{ button.width }} 4.9" text="$o$fff{{ button.title }}" textsize="1.3"
+                     valign="center2" halign="center" action="{{ id }}__list_buttons_{{ loop.index0 }}" focusareacolor1="0005" focusareacolor2="0007" />
+        {% endif %}
       {% endfor %}
     </frame>
   {% endif %}

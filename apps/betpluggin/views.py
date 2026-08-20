@@ -152,8 +152,12 @@ class BetNavMixin:
 	everything and remember a command. Every entry is a plain button in the list toolbar, so no template
 	is duplicated -- ManualListView already renders `get_buttons()` there.
 
-	Subclasses set `nav_key` to their own entry so the bar never offers a link to the window you are
-	already looking at.
+	Subclasses set `nav_key` to their own entry. That entry is still drawn, but faded and inert. It used
+	to be dropped from the list instead, which sounds tidier and is worse: with one entry missing, every
+	remaining button slid sideways, and slid by a different amount in each window, so "Market" was in a
+	different place depending on where you happened to be. A bar you have to re-read every time is a bar
+	nobody learns. Six fixed positions cost one button of width and buy the reflex -- and the faded one
+	doubles as the only "you are here" marker the window has.
 	"""
 
 	nav_key = None
@@ -198,10 +202,21 @@ class BetNavMixin:
 			('pace', 'Pace', 14, accents['purple']['button'], to_pace),
 			('wallet', 'My stats', 20, '55555FFF', to_wallet),
 		]
-		return [
-			{'title': title, 'width': width, 'colour': colour, 'action': action}
-			for key, title, width, colour, action in entries if key != self.nav_key
-		]
+		# The current window's button keeps its slot and its hue, at a third of the alpha -- same shape,
+		# same place, visibly switched off. `action` is left in the dict because the dispatcher indexes
+		# `get_buttons()` by position and dropping the key would shift every index after it; the template
+		# simply never wires an action onto a disabled button, so it is unreachable.
+		buttons = []
+		for key, title, width, colour, action in entries:
+			disabled = key == self.nav_key
+			buttons.append({
+				'title': title,
+				'width': width,
+				'colour': colour[:6] + '55' if disabled else colour,
+				'action': action,
+				'disabled': disabled,
+			})
+		return buttons
 
 
 class BetWidget(WidgetView):
