@@ -125,8 +125,23 @@ class RaceResult(TimedModel):
 	stays true whether or not there was a market open at the time.
 	"""
 
+	SOURCE_LIVE = 'live'
+	"""Observed at the podium, from the callback the market itself settles on."""
+	SOURCE_IMPORT = 'import'
+	"""Reconstructed after the fact from statistics PyPlanet had already been keeping. See //raceimport."""
+
 	map = ForeignKeyField(Map, index=True)
 	player = ForeignKeyField(Player, index=True)
+
+	source = CharField(max_length=10, default=SOURCE_LIVE, index=True)
+	"""
+	Where this row came from.
+
+	Reconstructed races are a guess about which finishes belonged to the same session, and a guess can
+	turn out wrong -- if the session threshold is too generous, two evenings of play merge into one
+	race that never happened. Keeping the two apart means a bad import can be deleted and redone
+	without touching a single race that was actually watched.
+	"""
 
 	position = IntegerField()
 	"""

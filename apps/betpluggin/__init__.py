@@ -43,6 +43,7 @@ from pyplanet.contrib.setting import Setting
 
 from .duel import DuelManager
 from .models import Bet, RaceResult
+from .raceimport import DEFAULT_GAP_MINUTES, RaceImporter
 from .views import (
 	BetWidget, BetMarketView, BetLeaderboardView, BetResultView, BetTargetsView, BetDuelBoardView
 )
@@ -393,6 +394,14 @@ class BetplugginApp(AppConfig):
 				command='close', namespace='bet', target=self.chat_admin_close_betting, admin=True,
 				perms='betpluggin:manage_betting', description='Close betting for the current period early.'
 			),
+
+			Command(
+				command='raceimport', target=self.chat_admin_race_import, admin=True,
+				perms='betpluggin:manage_betting',
+				description='Rebuild past races from the server statistics. Shows what it would do; '
+							'add "confirm" to write, or "clear" to undo.'
+			).add_param(name='action', type=str, required=False, help='"confirm", "clear", or nothing to preview.')
+			 .add_param(name='gap', type=int, required=False, help='Minutes of quiet that separate two races.'),
 
 			Command(
 				command='help', namespace='bet', target=self.chat_help_admin, admin=True,
@@ -1538,6 +1547,8 @@ class BetplugginApp(AppConfig):
 			dict(
 				map=map.id,
 				player=entry['player'].id,
+				# Explicit for the same reason the timestamps are: insert_many does not apply defaults.
+				source=RaceResult.SOURCE_LIVE,
 				position=position,
 				field_size=len(ranked),
 				points=entry.get('map_points'),
@@ -2522,6 +2533,79 @@ class BetplugginApp(AppConfig):
 		)
 		await self._refresh_ui()
 
+	async def chat_admin_race_import(self, player, data=None, **kwargs):
+		"""
+		Preview, commit or undo a reconstruction of past races. See raceimport.py for what it recovers.
+
+		Previewing is the default and committing takes a word: an import rewrites years of history in
+		one go, and the number of races it claims to have found is the only thing that will tell an
+		admin whether the session gap was sensible before they are living with the result.
+		"""
+		action = (data.action or '').lower() if data and getattr(data, 'action', None) else ''
+		gap = data.gap if data and getattr(data, 'gap', None) else DEFAULT_GAP_MINUTES
+		if gap < 1:
+			await self.instance.chat('$f00The session gap has to be at least a minute.', player)
+			return
+
+		importer = RaceImporter(self)
+
+		if action == 'clear':
+			removed = await importer.clear()
+			await self.instance.chat(
+				'{}$ff0Removed $fff{}$ff0 imported result(s). Races recorded live are untouched.'.format(
+					CHAT_PREFIX, removed
+				), player
+			)
+			return
+
+		await self.instance.chat(
+			'{}$ff0Reading the server statistics, this can take a moment...'.format(CHAT_PREFIX), player
+		)
+
+		if action == 'confirm':
+			stats = await importer.run(gap_minutes=gap)
+			await self.instance.chat(
+				'{}$ff0Imported $fff{}$ff0 race(s) as $fff{}$ff0 result(s) for $fff{}$ff0 driver(s), '
+				'replacing $fff{}$ff0 previously imported row(s).'.format(
+					CHAT_PREFIX, stats['races'], stats['rows'], stats['drivers'], stats['removed']
+				), player
+			)
+			return
+
+		rows, stats = await importer.collect(gap_minutes=gap)
+		already = await importer.existing()
+
+		if not stats['races']:
+			await self.instance.chat(
+				'{}$ff0Nothing to import: the statistics hold no map where two drivers finished within '
+				'$fff{}$ff0 minutes of each other.'.format(CHAT_PREFIX, gap), player
+			)
+			return
+
+		await self.instance.chat(
+			'{}$ff0Would import $fff{}$ff0 race(s) — $fff{}$ff0 result(s), $fff{}$ff0 driver(s) '
+			'across $fff{}$ff0 map(s), from $fff{}$ff0 to $fff{}$ff0.'.format(
+				CHAT_PREFIX, stats['races'], stats['rows'], stats['drivers'], stats['maps'],
+				stats['earliest'].strftime('%Y-%m-%d'), stats['latest'].strftime('%Y-%m-%d')
+			), player
+		)
+		if stats['cutoff']:
+			await self.instance.chat(
+				'{}$aaaStops at $fff{}$aaa, where live recording took over.'.format(
+					CHAT_PREFIX, stats['cutoff'].strftime('%Y-%m-%d %H:%M')
+				), player
+			)
+		if already:
+			await self.instance.chat(
+				'{}$aaa{} imported result(s) already stored — confirming replaces them.'.format(
+					CHAT_PREFIX, already
+				), player
+			)
+		await self.instance.chat(
+			'{}$ff0Use $fff//raceimport confirm$ff0 to write it, or $fff//raceimport confirm <gap>$ff0 '
+			'with a different session gap (currently $fff{}$ff0 min).'.format(CHAT_PREFIX, gap), player
+		)
+
 	async def chat_help_public(self, player, data=None, **kwargs):
 		topic = data.topic if data and hasattr(data, 'topic') and data.topic else None
 		if topic and topic.lower() != 'bet':
@@ -2546,6 +2630,7 @@ class BetplugginApp(AppConfig):
 		await self.instance.chat('$fff//bet open$ff0 - Force-open betting for the current period.', player)
 		await self.instance.chat('$fff//bet close$ff0 - Close betting for the current period early.', player)
 		await self.instance.chat('$fff//bet help$ff0 - Show this admin command list.', player)
+		await self.instance.chat('$fff//raceimport$ff0 - Rebuild past races from the server statistics. Shows what it would do; $fff//raceimport confirm$ff0 writes it, $fff//raceimport clear$ff0 undoes it.', player)
 		await self.instance.chat('$ff0--- PyPlanet commands betting reacts to on its own ---', player)
 		await self.instance.chat('$fff//skip$ff0, $fff//next$ff0, $fff//previous$ff0, $fff//restart$ff0 - Betting is called off and everyone is refunded: the map has no honest winner.', player)
 		await self.instance.chat('$fff//extend$ff0 - The betting window is re-measured against the map\'s new length (percentage windows only).', player)
