@@ -128,11 +128,15 @@ class RaceResult(TimedModel):
 	map = ForeignKeyField(Map, index=True)
 	player = ForeignKeyField(Player, index=True)
 
-	position = IntegerField(index=True)
+	position = IntegerField()
 	"""
 	Finishing position, 1 = won. Computed by the plugin the same way the winner is (points then time in
 	round-based modes, driven time otherwise) rather than taken from the callback's own `rank`, which
 	ranks every connected player whether they drove or not.
+
+	Not indexed on purpose. It holds a few dozen distinct values across millions of rows, so no query
+	would use an index on it anyway -- and every row written would pay to maintain one. The reads this
+	table is being filled for start from a driver or a map, which the two foreign keys already cover.
 	"""
 
 	field_size = IntegerField()

@@ -260,6 +260,15 @@ class BetplugginApp(AppConfig):
 			default=True
 		)
 
+		self.setting_record_results = Setting(
+			'record_race_results', 'Record race history', Setting.CAT_BEHAVIOUR, type=bool,
+			description='Writes the finishing order of every race, which the position bets will later '
+						'need to estimate how strong each player is. One row per driver per map -- a full '
+						'server running non-stop adds a few million rows a year, on a table nothing reads '
+						'yet. Turn it off to stop collecting; the history already gathered is kept.',
+			default=True
+		)
+
 		# Owns the one duel a map may have. Given the app rather than the other way round so every chat
 		# line, refund and payout still goes through the app's single implementation of each.
 		self.duels = DuelManager(self)
@@ -408,6 +417,7 @@ class BetplugginApp(AppConfig):
 			self.setting_duel_enabled,
 			self.setting_duel_min_stake, self.setting_duel_max_stake,
 			self.setting_duel_accept_seconds, self.setting_duel_spectators,
+			self.setting_record_results,
 		)
 
 		self.context.signals.listen(mp_signals.map.map_begin, self.map_begin)
@@ -1503,6 +1513,9 @@ class BetplugginApp(AppConfig):
 		because the history cannot be back-filled: a race that went unrecorded is gone, and the odds of
 		docs/conception-paris-position.md need roughly thirty of them before they mean anything.
 		"""
+		if not await self.setting_record_results.get_value():
+			return
+
 		map = self.instance.map_manager.current_map
 		if map is None:
 			return

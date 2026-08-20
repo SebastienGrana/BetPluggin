@@ -77,6 +77,27 @@ est une **promesse ferme**. Une fois écrit, il ne bouge plus, quoi qu'il arrive
 (`players[]` avec `rank`, `map_points`, `player`) — voir `apps/betpluggin/__init__.py:664`. Le
 plugin s'en sert uniquement pour identifier le vainqueur et jette le reste. Il suffit de l'écrire.
 
+#### Volumétrie, et ce que ça impose à l'étape 3
+
+Un serveur plein tournant en continu écrit de l'ordre de **3 millions de lignes par an** (≈ 288
+cartes/jour × ~30 pilotes). L'écriture ne coûte rien : un seul `INSERT` multi-lignes par fin de
+course, pendant le podium, jamais pendant que les joueurs roulent. La taille de la base existante
+n'y change rien non plus — `raceresult` est une table à part qui démarre à zéro, les quinze ans de
+records d'un `lolmaps` ne la ralentissent pas.
+
+Le risque n'est donc pas l'écriture, c'est **la lecture de l'étape 3**. Sur une table de cette
+taille, le calcul de force doit lire les **N dernières courses d'un pilote** — requête bornée,
+attaquée par `player_id` — et jamais balayer la table. Un `SELECT` sur tout l'historique à chaque
+ouverture de marché est la seule façon de faire ramer ce plugin.
+
+C'est aussi pour ça que `position` n'est **pas** indexée : quelques dizaines de valeurs distinctes
+sur des millions de lignes, aucun optimiseur ne s'en servirait, et chaque écriture paierait
+l'entretien de l'index. Les lectures prévues partent d'un pilote ou d'une carte, que les deux clés
+étrangères couvrent déjà.
+
+Enfin, le réglage `record_race_results` permet à un admin de couper la collecte sans toucher au
+code, sur un serveur où ce volume ne serait pas souhaité. L'historique déjà accumulé est conservé.
+
 ## 5. Calculer les probabilités
 
 Chaque pilote reçoit une **force**, estimée depuis `RaceResult`.
