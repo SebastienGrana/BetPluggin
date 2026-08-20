@@ -71,10 +71,12 @@ services:
       LOGIN: "${TM_DEDICATED_LOGIN}"
       PASSWORD: "${TM_DEDICATED_PASSWORD}"
       TITLE: "TMStadium@nadeo"
-      # Spaces here need the `command:` patch further down -- the image's start.sh interpolates
-      # SERVER_NAME unquoted, so anything after the first space becomes a separate argument and the
-      # name silently truncates ("VelpDev - Come test..." showed up as just "VelpDev").
-      SERVER_NAME: "VelpDev - Come test the BetPugin !"
+      # This wins over <name> in docker/tm-dedicated-config.txt (start.sh passes it as /servername=),
+      # so the two are kept in sync -- otherwise the file says one thing and the server list another.
+      # Spaces here need the `command:` patch above -- the image's start.sh interpolates SERVER_NAME
+      # unquoted, so anything after the first space becomes a separate argument and the name silently
+      # truncates to its first word.
+      SERVER_NAME: "New Bet Plugin ! and Duels !  Come test it !"
       # Boot on maplist.txt, the playlist PyPlanet actually maintains (//add writes there, and it's
       # bind-mounted below so it survives container recreation). Without this the image's start.sh
       # falls back to `: ${MATCH_SETTINGS:="MatchSettings/default.txt"}` -- the template it generates
