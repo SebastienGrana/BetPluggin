@@ -47,7 +47,7 @@ from .models import Bet, RaceResult
 from .raceimport import DEFAULT_GAP_MINUTES, RaceImporter
 from .views import (
 	BetWidget, BetMarketView, BetLeaderboardView, BetResultView, BetTargetsView, BetDuelBoardView,
-	BetPaceView
+	BetPaceView, BetMyStatsView
 )
 
 # Modes (matched case-insensitively against the mode script name, e.g. "Trackmania/TM_Rounds_Online")
@@ -357,8 +357,8 @@ class BetplugginApp(AppConfig):
 
 			Command(
 				command='wallet', namespace='bet', target=self.chat_my_stats,
-				description='Show your BetPluggin wagering history. Your live Planets balance is shown '
-							'in your game client.'
+				description='Open your own stat sheet: betting, duels and driving, each next to the '
+							'server record. Your live Planets balance is shown in your game client.'
 			),
 
 			Command(
@@ -495,6 +495,12 @@ class BetplugginApp(AppConfig):
 		self.context.signals.listen(mp_signals.flow.round_start, self.round_start)
 		self.context.signals.listen(mp_signals.flow.round_end, self.round_end)
 		self.context.signals.listen(mp_signals.player.player_connect, self.player_connect)
+		# Driving and spectating are not the same thing to this plugin (see is_spectating), so a player
+		# swapping between the two changes what every open window is allowed to offer. Without these two
+		# the market would go on showing live bet buttons on someone who has just stopped driving, and
+		# would go on showing dead ones on someone who has just come back.
+		self.context.signals.listen(mp_signals.player.player_enter_spectator_slot, self.player_slot_changed)
+		self.context.signals.listen(mp_signals.player.player_enter_player_slot, self.player_slot_changed)
 		self.context.signals.listen(mp_signals.other.bill_updated, self.on_bill_updated)
 		self.context.signals.listen(tm_scores_signal, self.on_scores)
 		self.context.signals.listen(tm_warmup_start_signal, self.warmup_start)
@@ -1740,6 +1746,16 @@ class BetplugginApp(AppConfig):
 		if self.widget:
 			await self.widget.display(player=player)
 
+	async def player_slot_changed(self, player, **kwargs):
+		"""
+		Somebody swapped between driving and spectating, so redraw every open window.
+
+		The market decides per row whether a bet is still on offer, and that answer has just changed for
+		one of the rows -- in either direction. Refreshing here rather than leaving it to the next tick is
+		what keeps the greyed-out button and the refusal message saying the same thing at the same moment.
+		"""
+		await self._refresh_ui()
+
 	# ------------------------------------------------------------------
 	# UI refresh
 	# ------------------------------------------------------------------
@@ -2022,6 +2038,23 @@ class BetplugginApp(AppConfig):
 			None
 		)
 
+	@staticmethod
+	def is_spectating(player):
+		"""
+		Whether `player` is watching rather than driving, as of the last PlayerInfoChanged.
+
+		This is what decides whether they can be bet on or challenged: a spectator posts no time and takes
+		no place in the ranking, so a stake on them is a stake that can only lose. That was money quietly
+		thrown away -- the market listed them like anybody else, and the player who backed them found out
+		at the podium.
+
+		`flow.is_spectator` is None until the server has said anything about them (someone who was already
+		connected when PyPlanet started, for instance), and None is not "spectating". Unknown counts as
+		driving on purpose: refusing a bet on a hunch would be a rule nobody could see the reason for, and
+		the worst case is the bet everyone could already place.
+		"""
+		return getattr(getattr(player, 'flow', None), 'is_spectator', None) is True
+
 	def display_name(self, login):
 		"""
 		The nickname to show for a login, falling back to the login itself once they disconnect.
@@ -2073,6 +2106,11 @@ class BetplugginApp(AppConfig):
 		target = self.get_online_player(target_login)
 		if not target:
 			return False, 'Player {} is not connected to the server.'.format(target_login)
+
+		if self.is_spectating(target):
+			return False, '{} is spectating, not driving -- a bet on them could only lose.'.format(
+				target.nickname or target.login
+			)
 
 		# Self-betting temporarily allowed for solo testing -- re-enable this check before going live.
 		# if target.login.lower() == bettor.login.lower():
@@ -2275,12 +2313,6 @@ class BetplugginApp(AppConfig):
 			return 'L{}'.format(abs(streak))
 		return '-'
 
-	async def get_player_stats(self, login):
-		for entry in await self.get_leaderboard(limit=None):
-			if entry['login'].lower() == login.lower():
-				return entry
-		return None
-
 	# ------------------------------------------------------------------
 	# Market memory: what the server has learnt about each player as a *target*
 	# ------------------------------------------------------------------
@@ -2434,27 +2466,6 @@ class BetplugginApp(AppConfig):
 		if flawless:
 			award(max(flawless, key=lambda e: e['backed']), '$fffNever loses')
 
-	async def get_hall_of_fame(self):
-		"""
-		The three single best results the server has ever seen, for the /wallet footer.
-
-		Returns a dict of optional entries -- each None until a bet of that kind has actually resolved,
-		so a fresh database simply shows nothing rather than a row of zeroes.
-		"""
-		leaderboard = await self.get_leaderboard(limit=None)
-		if not leaderboard:
-			return dict(upset=None, biggest_win=None, best_streak=None)
-
-		upset = max(leaderboard, key=lambda e: e['best_odds'])
-		biggest = max(leaderboard, key=lambda e: e['best_win'])
-		streak = max(leaderboard, key=lambda e: e['streak'])
-
-		return dict(
-			upset=upset if upset['best_odds'] > 0 else None,
-			biggest_win=biggest if biggest['best_win'] > 0 else None,
-			best_streak=streak if streak['streak'] > 0 else None,
-		)
-
 	# ------------------------------------------------------------------
 	# Chat commands
 	# ------------------------------------------------------------------
@@ -2574,47 +2585,20 @@ class BetplugginApp(AppConfig):
 		await self.instance.chat('$ff0Your current bet(s): {}.'.format(', '.join(parts)), player)
 
 	async def chat_my_stats(self, player, **kwargs):
-		stats = await self.get_player_stats(player.login)
-		if not stats or stats['bets'] == 0:
-			await self.instance.chat(
-				'$aaaNo resolved bets yet — place your first bet with $fff/bet <login> <amount>$aaa or $fff/bet market$aaa!',
-				player
-			)
-			return
+		"""
+		Open the player's own stat sheet.
 
-		await self.instance.chat(
-			'{}$ff0Your stats: $fff{}$ff0 bets · $fff{}%$ff0 wins · $fff{}$ff0 planets bet · '
-			'profit $fff{:+d}$ff0 · best win $fff{}$ff0 · best multiplier $fffx{}$ff0 · in a row $fff{}$ff0.'.format(
-				CHAT_PREFIX, stats['bets'], stats['win_rate'], stats['wagered'], stats['net'],
-				stats['best_win'], self.format_odds(stats['best_odds']),
-				self.format_streak(stats['streak'])
-			),
-			player
-		)
+		This answered in chat until BetMyStatsView existed, and it was the odd one out: every other entry
+		in the navigation bar opened a window, this one printed two lines that scrolled away in the
+		podium spam -- and only ever covered betting, never the duel record or the driving rating the
+		same player had been building up elsewhere.
 
-		# Server records, folded into the command the player already runs. Deliberately not broadcast:
-		# these are fun to look up, not worth pushing into everyone's chat on every resolution.
-		records = await self.get_hall_of_fame()
-		lines = []
-		if records['upset']:
-			lines.append('best multiplier $fffx{}$ff0 by $fff{}$ff0'.format(
-				self.format_odds(records['upset']['best_odds']),
-				records['upset']['nickname'] or records['upset']['login']
-			))
-		if records['biggest_win']:
-			lines.append('biggest win $fff{}$ff0 by $fff{}$ff0'.format(
-				records['biggest_win']['best_win'],
-				records['biggest_win']['nickname'] or records['biggest_win']['login']
-			))
-		if records['best_streak']:
-			lines.append('most wins in a row $fff{}$ff0 by $fff{}$ff0'.format(
-				self.format_streak(records['best_streak']['streak']),
-				records['best_streak']['nickname'] or records['best_streak']['login']
-			))
-		if lines:
-			await self.instance.chat(
-				'{}$ff0Server records: {}.'.format(CHAT_PREFIX, ' · '.join(lines)), player
-			)
+		Unlike the leaderboard command there is no "nothing yet, come back later" line in front of it.
+		The sheet is worth opening on an empty account precisely because the record column is full: it is
+		the one window that shows a new player what there is to play for.
+		"""
+		view = BetMyStatsView(self)
+		await view.display(player=player)
 
 	async def chat_leaderboard(self, player, **kwargs):
 		leaderboard = await self.get_leaderboard(limit=1)

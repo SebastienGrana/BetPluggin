@@ -230,6 +230,27 @@ class DuelManager:
 			)
 			return
 
+		# A duel is decided by which of the two finishes ahead, so both of them have to be driving. Refused
+		# on both sides, not just the opponent's: challenging while spectating yourself is the more
+		# expensive mistake of the two -- the stake is real, and it is lost the moment the map ends.
+		if self.app.is_spectating(opponent):
+			await self.app._safe_chat(
+				'{}$f00$fff{}$f00 is spectating -- they have to be driving to duel.'.format(
+					self.app.CHAT_PREFIX, opponent.nickname or opponent.login
+				),
+				challenger
+			)
+			return
+
+		if self.app.is_spectating(challenger):
+			await self.app._safe_chat(
+				'{}$f00You are spectating -- join the race before challenging anyone.'.format(
+					self.app.CHAT_PREFIX
+				),
+				challenger
+			)
+			return
+
 		minimum, maximum = await self._limits()
 		if amount < minimum or amount > maximum:
 			await self.app._safe_chat(

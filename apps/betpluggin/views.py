@@ -121,6 +121,10 @@ class BetListStyleMixin:
 		# The one board that measures driving rather than betting, so it gets the one colour that is not
 		# a variation on the others.
 		'purple': dict(tint='8A5CD812', header='8A5CD81E', line='D9C4FFDD', button='8A5CD8FF'),
+		# "My stats" -- the only window about the person reading it rather than about the room. Teal
+		# because it has to be told apart from the market blue at a glance in the navigation bar, where
+		# the two sit four buttons apart and a second blue would just read as a mis-click.
+		'teal': dict(tint='1FB0A812', header='1FB0A81E', line='A6EFE6DD', button='149C92FF'),
 	}
 
 	template_name = 'betpluggin/list.xml'
@@ -263,14 +267,10 @@ class BetNavMixin:
 			await self._nav_to(player, BetPaceView)
 
 		async def to_wallet(player, values, view=None, **kwargs):
-			# Answers in chat, so the window is closed rather than swapped -- otherwise the reply lands
-			# behind the list the player is still staring at.
-			await self.close(player)
-			await self.app.chat_my_stats(player)
+			await self._nav_to(player, BetMyStatsView)
 
 		# The colour of each button is the colour of the window it opens (BetListStyleMixin.ACCENTS), so
-		# the panel that appears is visibly the one that was clicked. "My stats" answers in chat and has
-		# no window of its own, hence the neutral grey.
+		# the panel that appears is visibly the one that was clicked.
 		accents = BetListStyleMixin.ACCENTS
 		entries = [
 			('market', 'Market', 20, accents['blue']['button'], to_market),
@@ -278,7 +278,7 @@ class BetNavMixin:
 			('leaderboard', 'Leaderboard', 24, accents['gold']['button'], to_leaderboard),
 			('duels', 'Duel record', 22, accents['orange']['button'], to_duels),
 			('pace', 'Pace', 14, accents['purple']['button'], to_pace),
-			('wallet', 'My stats', 20, '55555FFF', to_wallet),
+			('wallet', 'My stats', 20, accents['teal']['button'], to_wallet),
 		]
 		# The current window's button keeps its slot and its hue, at a third of the alpha -- same shape,
 		# same place, visibly switched off. `action` is left in the dict because the dispatcher indexes
@@ -614,8 +614,6 @@ class BetWidget(WidgetView):
 		await self.app.chat_leaderboard(player)
 
 	async def action_open_wallet(self, player, action, values, **kwargs):
-		# The only one of the four that answers in chat rather than a window: it is three lines about
-		# you, and a whole paged window for three lines would be worse, not better.
 		await self.app.chat_my_stats(player)
 
 	async def _back_duel_side(self, player, side):
@@ -865,6 +863,13 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 		else:
 			rule = 'pick ONE driver, up to {} bets on them'.format(self.app.MAX_BETS_PER_PERIOD)
 
+		# The one thing the greyed rows cannot say for themselves. A player watching from the stands sees
+		# every Duel button dead and no reason for it anywhere on the card -- the rows marked "spec" explain
+		# why *those* are dead, not why the ones next to drivers are.
+		me = self.app.get_online_player(self.requesting_login) if self.requesting_login else None
+		if me is not None and self.app.is_spectating(me):
+			rule += ' -- you are spectating, so no duels until you drive'
+
 		return 'Betting is OPEN{} -- {}'.format(countdown, rule)
 
 	async def get_data(self):
@@ -896,6 +901,12 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 		duel_enabled = await self.app.setting_duel_enabled.get_value()
 		duel_running = self.app.duels.duel is not None
 		duel_blocked = not duel_enabled or not self.app.market_is_open or duel_running
+
+		# ...and one more, which is about the reader rather than the row: a duel needs both names driving,
+		# so somebody watching from the stands cannot start one against anybody. Worked out once here
+		# instead of per row, because the answer is the same on every row in the window.
+		me = self.app.get_online_player(self.requesting_login) if self.requesting_login else None
+		i_am_spectating = me is not None and self.app.is_spectating(me)
 
 		rows = []
 		for player in self.app.instance.player_manager.online:
@@ -933,7 +944,17 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 			# no allowance left -- three different sentences from place_bet(), one dead row here. The
 			# window's title carries the explanation, so the row itself only has to look inert.
 			is_mine = committed_login is not None and player.login.lower() == committed_login
-			locked = not self.app.market_is_open or (committed_login is not None and not is_mine) or room <= 0
+			# Spectators are listed but not backable: they post no time and take no place, so the only
+			# thing a stake on them can do is lose. Listed rather than hidden on purpose -- a name that
+			# disappears from the market reads as a bug, a name that is visibly greyed and labelled reads
+			# as a rule.
+			spectating = self.app.is_spectating(player)
+			locked = (
+				not self.app.market_is_open
+				or (committed_login is not None and not is_mine)
+				or room <= 0
+				or spectating
+			)
 
 			past = history.get(player.login.lower())
 			if past:
@@ -947,6 +968,15 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 
 			is_self = self.requesting_login is not None and player.login.lower() == self.requesting_login.lower()
 
+			# The two markers a nickname can carry, in the order they matter. ">" is the driver this player
+			# has committed to; "spec" is why the row is dead. Both can be true at once -- back someone and
+			# watch them drop into the stands -- and when they are, "spec" is the news.
+			marks = []
+			if is_mine:
+				marks.append('$ff0>')
+			if spectating:
+				marks.append('$888spec')
+
 			rows.append(dict(
 				# Read by list.xml to draw this row's bet buttons dead instead of live. The click still
 				# reaches place_bet() -- greying is a hint, not the rule -- so a player who clicks anyway
@@ -954,11 +984,13 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 				_locked=locked,
 				_room=room if not locked else 0,
 				# Same, for the "Duel" button -- see the note above get_actions().
-				_duel_locked=duel_blocked or is_self,
+				_duel_locked=duel_blocked or is_self or spectating or i_am_spectating,
 				login=player.login,
 				# The driver you are committed to is the one row that still matters once every other row
 				# is grey, so it is marked rather than merely left un-greyed.
-				nickname='$ff0>$z$s {}'.format(player.nickname) if is_mine else player.nickname,
+				nickname=(
+					'{}$z$s {}'.format(' '.join(marks), player.nickname) if marks else player.nickname
+				),
 				pot=str(pot_on_player),
 				odds='x{}'.format(self.app.format_odds(odds)),
 				form=form,
@@ -1372,6 +1404,308 @@ class BetPaceView(BetListStyleMixin, BetNavMixin, ManualListView):
 					)
 				),
 			))
+		return rows
+
+
+class BetMyStatsView(BetListStyleMixin, BetNavMixin, ManualListView):
+	"""
+	One player's own numbers, taken from every board at once.
+
+	This used to answer in chat, and it was the odd one out: five navigation buttons opened a window and
+	the sixth printed two lines that scrolled away in the podium spam. It also only ever reported
+	betting -- the duel record and the driving rating a player had been building up lived on other
+	boards, where they had to hunt for their own name among everybody else's.
+
+	So this is a stat sheet rather than a board: one row per number, grouped by which board it comes
+	from, with the server record beside it. The record column is the point. "42 bets" says nothing on
+	its own; "42 bets, most on the server is 210" is a position -- and it is the same glance that tells
+	a new player what this plugin even keeps track of.
+	"""
+
+	nav_key = 'wallet'
+	accent = 'teal'
+	title = 'BetPluggin -- my stats'
+	icon_style = 'Icons128x128_1'
+	icon_substyle = 'ProfileAdvanced'
+
+	# A record needs a sample before it is a record. Without this, "best win rate" is whoever won their
+	# only duel -- true, useless, and worst of all discouraging: a 100% that cannot be beaten is not a
+	# target, it is a wall. Only applied to the rates; counts and totals are self-limiting.
+	RECORD_MIN_DUELS = 5
+
+	# Four columns and no action buttons, so the whole 218-unit row is theirs. "Held by" gets the most
+	# of it because it holds nicknames, which are the one value here that has no length limit.
+	fields = [
+		{'name': 'Stat',        'index': 'stat',   'sorting': False, 'searching': False, 'width': 44},
+		{'name': 'You',         'index': 'mine',   'sorting': False, 'searching': False, 'width': 52},
+		{'name': 'Server best', 'index': 'best',   'sorting': False, 'searching': False, 'width': 38},
+		{'name': 'Held by',     'index': 'holder', 'sorting': False, 'searching': False, 'width': 84},
+	]
+
+	def __init__(self, app):
+		super().__init__()
+		self.app = app
+		self.manager = app.context.ui
+		self.requesting_login = None
+
+	async def display(self, player=None, **kwargs):
+		if player is not None:
+			self.requesting_login = player.login
+		return await super().display(player=player, **kwargs)
+
+	# ------------------------------------------------------------------
+	# Row helpers
+	# ------------------------------------------------------------------
+
+	@staticmethod
+	def _signed(value):
+		return (
+			'$0f0{:+d}$z'.format(value) if value > 0
+			else '$f00{:+d}$z'.format(value) if value < 0
+			else '{:+d}'.format(value)
+		)
+
+	@staticmethod
+	def _best(entries, key, lowest=False):
+		"""
+		Whoever holds the record for `key`, or None when nobody holds one yet.
+
+		Zero is not a record: on a server where the biggest win ever is 0 planets there has been no
+		biggest win, and printing "0" next to a name would credit somebody for it. Dropping those here is
+		what lets the row fall back to a dash instead.
+		"""
+		candidates = [entry for entry in entries if entry.get(key)]
+		if not candidates:
+			return None
+		return min(candidates, key=lambda e: e[key]) if lowest else max(candidates, key=lambda e: e[key])
+
+	def _holder(self, entry):
+		"""
+		The name to print in "Held by" -- or "you", when the record being held is the reader's own.
+
+		Repeating somebody's own nickname back at them across from their own number reads as a bug for
+		exactly as long as it takes to notice it isn't one. Saying "you" instead turns the same row into
+		the one thing this window has to give away: you are the one to beat.
+		"""
+		if entry is None:
+			return None
+		if self.requesting_login and entry['login'].lower() == self.requesting_login.lower():
+			return '$0f0you$z'
+		return entry['nickname'] or entry['login']
+
+	@staticmethod
+	def _row(stat, mine, best=None, holder=None):
+		# A missing value is drawn as a grey dash rather than left blank. Blank reads as a rendering
+		# fault; a dash reads as "nothing here yet", which is what it means on a row the player has not
+		# earned a number on.
+		dash = '$888-$z'
+		return dict(
+			stat=stat,
+			mine=mine if mine is not None else dash,
+			best=best if best is not None else dash,
+			holder=holder if holder is not None else dash,
+		)
+
+	@staticmethod
+	def _section(name):
+		"""A heading row. The list template has no notion of groups, so a row is made to look like one."""
+		return dict(stat='$o$0dd{}$z'.format(name), mine='', best='', holder='')
+
+	def _find(self, entries):
+		"""(index, entry) for the player reading the window, or (None, None) if they are not on that board."""
+		login = (self.requesting_login or '').lower()
+		for index, entry in enumerate(entries):
+			if entry['login'].lower() == login:
+				return index, entry
+		return None, None
+
+	async def get_title(self):
+		# Three boards, three chances to have nothing on record, and a sheet of dashes with no
+		# explanation looks broken rather than empty. Say which one is empty and how to fix it -- this is
+		# the window a brand-new player is most likely to open first.
+		leaderboard = await self.app.get_leaderboard(limit=None)
+		_, me = self._find(leaderboard)
+		if not me:
+			return (
+				'My stats -- nothing on record yet. Place a bet from $fffMarket$z$s and this fills in.'
+			)
+		return 'My stats -- how you compare with the rest of the server'
+
+	async def get_data(self):
+		leaderboard = await self.app.get_leaderboard(limit=None)
+		duels = await self.app.get_duel_stats()
+		pace = await self.app.get_pace_stats(limit=None)
+
+		rows = [self._section('BETTING')]
+
+		# Rank first, on all three boards: it is the number a player came for, and the one the boards
+		# themselves make hardest to find once there are more than a screenful of names.
+		_, me = self._find(leaderboard)
+		leader = leaderboard[0] if leaderboard else None
+		rank = leaderboard.index(me) + 1 if me else None
+		rows.append(self._row(
+			'Rank (by profit)',
+			'#{} of {}'.format(rank, len(leaderboard)) if me else None,
+			'#1' if leader else None,
+			self._holder(leader),
+		))
+
+		record = self._best(leaderboard, 'bets')
+		rows.append(self._row(
+			'Bets placed',
+			str(me['bets']) if me else None,
+			str(record['bets']) if record else None,
+			self._holder(record),
+		))
+
+		record = self._best(leaderboard, 'wins')
+		rows.append(self._row(
+			'Bets won',
+			'{} ({}%)'.format(me['wins'], round(me['win_rate'])) if me else None,
+			str(record['wins']) if record else None,
+			self._holder(record),
+		))
+
+		record = self._best(leaderboard, 'wagered')
+		rows.append(self._row(
+			'Planets bet',
+			str(me['wagered']) if me else None,
+			str(record['wagered']) if record else None,
+			self._holder(record),
+		))
+
+		# The record for profit can legitimately be negative -- a room that has collectively priced badly
+		# has a best that is still a loss. Reported as it is: the alternative is hiding the one number
+		# that says the market has been beating everybody.
+		record = self._best(leaderboard, 'net')
+		rows.append(self._row(
+			'Profit',
+			self._signed(me['net']) if me else None,
+			self._signed(record['net']) if record else None,
+			self._holder(record),
+		))
+
+		record = self._best(leaderboard, 'best_win')
+		rows.append(self._row(
+			'Best win',
+			str(me['best_win']) if me and me['best_win'] else None,
+			str(record['best_win']) if record else None,
+			self._holder(record),
+		))
+
+		record = self._best(leaderboard, 'best_odds')
+		rows.append(self._row(
+			'Best multiplier',
+			'x{}'.format(self.app.format_odds(me['best_odds'])) if me and me['best_odds'] else None,
+			'x{}'.format(self.app.format_odds(record['best_odds'])) if record else None,
+			self._holder(record),
+		))
+
+		record = self._best(leaderboard, 'streak')
+		rows.append(self._row(
+			'Wins in a row',
+			self.app.format_streak(me['streak']) if me else None,
+			self.app.format_streak(record['streak']) if record else None,
+			self._holder(record),
+		))
+
+		rows.append(self._section('DUELS'))
+
+		index, me = self._find(duels)
+		leader = duels[0] if duels else None
+		rows.append(self._row(
+			'Rank (by wins)',
+			'#{} of {}'.format(index + 1, len(duels)) if me else None,
+			'#1' if leader else None,
+			self._holder(leader),
+		))
+
+		record = self._best(duels, 'duels')
+		rows.append(self._row(
+			'Duels',
+			str(me['duels']) if me else None,
+			str(record['duels']) if record else None,
+			self._holder(record),
+		))
+
+		# The rate is compared only against players with a real duel history behind it (see
+		# RECORD_MIN_DUELS) -- so the reader's own percentage sits next to one somebody actually had to
+		# drive for.
+		seasoned = [entry for entry in duels if entry['duels'] >= self.RECORD_MIN_DUELS]
+		record = self._best(seasoned, 'duel_win_rate')
+		rows.append(self._row(
+			'Won / lost / draw',
+			'{} / {} / {}  ({}%)'.format(
+				me['duel_wins'], me['duel_losses'], me['duel_draws'], round(me['duel_win_rate'])
+			) if me else None,
+			'{}%'.format(round(record['duel_win_rate'])) if record else None,
+			self._holder(record),
+		))
+
+		record = self._best(duels, 'duel_net')
+		rows.append(self._row(
+			'Planets won',
+			self._signed(me['duel_net']) if me else None,
+			self._signed(record['duel_net']) if record else None,
+			self._holder(record),
+		))
+
+		rows.append(self._section('DRIVING'))
+
+		_, me = self._find(pace)
+		ranked = [entry for entry in pace if entry['missing'] == 0]
+		leader = ranked[0] if ranked else None
+		if me is None:
+			my_rank = None
+		elif me['missing']:
+			# Same rule as the pace board: no rank until the rating is a measurement. Said in full here
+			# because this row is the only place the player is ever told how far off they are.
+			my_rank = '$888not ranked, {} more race{}$z'.format(
+				me['missing'], '' if me['missing'] == 1 else 's'
+			)
+		else:
+			my_rank = '#{} of {}'.format(ranked.index(me) + 1, len(ranked))
+		rows.append(self._row('Rank (by rating)', my_rank, '#1' if leader else None, self._holder(leader)))
+
+		record = self._best(pace, 'races')
+		rows.append(self._row(
+			'Races',
+			str(me['races']) if me else None,
+			str(record['races']) if record else None,
+			self._holder(record),
+		))
+
+		record = self._best(pace, 'wins')
+		rows.append(self._row(
+			'Race wins',
+			str(me['wins']) if me else None,
+			str(record['wins']) if record else None,
+			self._holder(record),
+		))
+
+		# Lowest wins here, and only among rated drivers -- "best average place" is the one record on the
+		# sheet where a smaller number is the better one, and where one lucky race would otherwise own it
+		# outright.
+		record = self._best(ranked, 'avg_position', lowest=True)
+		rows.append(self._row(
+			'Average place',
+			# " of 9.1" is the field it was averaged over: 4th of 9 and 4th of 5 are not the same result,
+			# and this column is the only one that can say so.
+			'{:.1f} of {:.1f}'.format(me['avg_position'], me['avg_field']) if me else None,
+			'{:.1f}'.format(record['avg_position']) if record else None,
+			self._holder(record),
+		))
+
+		record = self._best(ranked, 'rating')
+		rows.append(self._row(
+			'Rating',
+			'{:.3f}'.format(me['rating']) if me else None,
+			'{:.3f}'.format(record['rating']) if record else None,
+			self._holder(record),
+		))
+
+		# 20 rows exactly, which is ManualListView's page size: the whole sheet on one page, no paging
+		# button on a window that would be nonsense to page through. Adding a row means dropping one.
 		return rows
 
 
