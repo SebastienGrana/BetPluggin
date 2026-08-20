@@ -33,7 +33,7 @@
   <!-- The way in for somebody who has just connected and has no idea what any of this is. It sits on the
        widget rather than only inside the windows on purpose: the widget is the one part of BetPluggin
        that is on screen without being asked for. -->
-  <quad pos="27.2 -1.4" z-index="2" size="2.6 2.6" bgcolor="FFFFFFE0" action="{{ id }}__open_help"/>
+  <quad pos="27.2 -1.4" z-index="2" size="2.6 2.6" bgcolor="FFFFFFFF" action="{{ id }}__open_help"/>
   <label pos="28.5 -2.7" z-index="3" size="2.6 2.6" textsize="1.05" halign="center" valign="center"
          textcolor="0A0A14FF" text="?" action="{{ id }}__open_help"/>
   <quad pos="30.4 -1.5" z-index="2" size="8.4 2.4" bgcolor="{{ status_color }}"/>

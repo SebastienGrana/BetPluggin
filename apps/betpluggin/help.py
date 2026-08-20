@@ -189,30 +189,23 @@ TOPICS = [
 		'group': 'Start here',
 		'accent': None,
 		'blocks': [
-			('p', 'All of this can be done by clicking instead. The commands are for people who type faster '
-				  'than they aim.'),
 			('h', 'Betting'),
-			('b', '$fff/bet <login> <amount>$ccc  --  back a driver for the current period.'),
-			('b', '$fff/bet market$ccc  ($fff/market$ccc, $fff/odds$ccc)  --  the betting window, with '
-				  'one-click bets.'),
-			('b', '$fff/bet mine$ccc  ($fff/mybet$ccc, $fff/bets$ccc)  --  what you have riding on this '
-				  'period.'),
-			('b', '$fff/bet wallet$ccc  ($fff/wallet$ccc, $fff/stats$ccc)  --  your own stat sheet.'),
-			('b', '$fff/bet top$ccc  ($fff/bettop$ccc)  --  the top bettors board.'),
-			('b', '$fff/bet targets$ccc  ($fff/targets$ccc, $fff/cotes$ccc)  --  the best bets board.'),
+			('b', '$fff/bet <login> <amount>$ccc  --  back a driver.'),
+			('b', '$fff/bet market$ccc  ($fff/market$ccc, $fff/odds$ccc)  --  one-click bets.'),
+			('b', '$fff/bet mine$ccc  ($fff/mybet$ccc, $fff/bets$ccc)  --  what you have riding.'),
+			('b', '$fff/bet wallet$ccc  ($fff/wallet$ccc, $fff/stats$ccc)  --  your stat sheet.'),
+			('b', '$fff/bet top$ccc  ($fff/bettop$ccc)  --  top bettors board.'),
+			('b', '$fff/bet targets$ccc  ($fff/targets$ccc, $fff/cotes$ccc)  --  best bets board.'),
 			('h', 'Duels'),
 			('b', '$fff/duel <login> <amount>$ccc  --  challenge a player.'),
-			('b', '$fff/accept <amount>$ccc  --  take a challenge. Leave the amount out to match it exactly.'),
-			('b', '$fff/decline$ccc  ($fff/refuse$ccc)  --  turn it down. Nothing is charged.'),
-			('b', '$fff/duelbet <login> <amount>$ccc  ($fff/back$ccc)  --  back one side of the running duel.'),
-			('b', '$fff/duels$ccc  ($fff/duel list$ccc, $fff/dueltop$ccc)  --  the top duellists board.'),
+			('b', '$fff/accept <amount>$ccc  --  take it. Leave the amount out to match it exactly.'),
+			('b', '$fff/decline$ccc  ($fff/refuse$ccc)  --  turn it down, nothing charged.'),
+			('b', '$fff/duelbet <login> <amount>$ccc  ($fff/back$ccc)  --  back a side of the duel.'),
+			('b', '$fff/duels$ccc  ($fff/duel list$ccc, $fff/dueltop$ccc)  --  top duellists board.'),
 			('h', 'Driving'),
-			('b', '$fff/pace$ccc  ($fff/form$ccc, $fff/racetop$ccc)  --  the top drivers board.'),
+			('b', '$fff/pace$ccc  ($fff/form$ccc, $fff/racetop$ccc)  --  top drivers board.'),
 			('h', 'This window'),
-			('b', '$fff/bet help$ccc  --  opens the page you are reading. Add a page name to land on '
-				  'it, as in $fff/bet help duels$ccc.'),
-			('p', 'A login is the plain name, not the nickname with the colours in it -- the buttons never '
-				  'get it wrong.'),
+			('b', '$fff/bet help$ccc  --  reopens this. Add a page name, as in $fff/bet help duels$ccc.'),
 		],
 	},
 
@@ -261,27 +254,23 @@ TOPICS = [
 		'accent': 'green',
 		'blocks': [
 			('h', 'Who is worth backing'),
-			('p', 'The market\'s memory of everyone who has ever been bet $ffon$ccc, over every bet this '
-				  'server has settled. Open it before you bet, not after: the Market window tells you what '
-				  'the room thinks tonight, this one tells you whether the room is usually right.'),
-			('p', 'Sorted by how often each player has been backed, so the names the market actually has an '
-				  'opinion about come first.'),
+			('p', 'Everyone ever bet $ffon$ccc, over every bet this server has settled. Open it before you '
+				  'bet: the Market shows what the room thinks tonight, this shows whether the room is '
+				  'usually right.'),
 			('h', 'The columns'),
 			('b', '$fffPlayer$ccc  --  the driver people bet on.'),
-			('b', '$fffBadge$ccc  --  a title handed out here for standing out on one of these numbers.'),
-			('b', '$fffDuels won$ccc  --  their head-to-head record, as "won of played". The one number on '
-				  'this board they earned by driving rather than by being picked. Blank means never duelled.'),
-			('b', '$fffTimes bet on$ccc  --  how many settled periods somebody had money on them.'),
+			('b', '$fffBadge$ccc  --  a title earned on one of these numbers.'),
+			('b', '$fffDuels won$ccc  --  head-to-head record, "won of played". Blank means never duelled.'),
+			('b', '$fffTimes bet on$ccc  --  settled periods somebody had money on them.'),
 			('b', '$fffWins$ccc  --  how many of those they won, and the percentage.'),
-			('b', '$fffPlanets bet$ccc  --  the total the room has ever staked on them.'),
-			('b', '$fffBettors\' profit$ccc  --  what backing them has paid, added up across everyone who '
-				  'ever did. Green means people made money on them; red means people lost money on them.'),
-			('b', '$fffUsually$ccc  --  the multiplier they normally go off at. A high number here next to a '
-				  'good win rate is the interesting combination: often right, rarely backed.'),
+			('b', '$fffPlanets bet$ccc  --  total the room has ever staked on them.'),
+			('b', '$fffBettors\' profit$ccc  --  what backing them has paid overall. Green: people made '
+				  'money on them; red: people lost.'),
+			('b', '$fffUsually$ccc  --  their normal multiplier. High next to a good win rate: often right, '
+				  'rarely backed.'),
 			('h', 'Reading it'),
-			('p', 'A high win rate is not automatically a good bet. If everybody already knows, the '
-				  'multiplier is low and there is little to win. The money is in the rows where '
-				  '$fffWins$ccc is better than $fffUsually$ccc suggests it should be.'),
+			('p', 'A high win rate alone is not a good bet -- if everybody knows, the multiplier is low. '
+				  'The money is where $fffWins$ccc beats what $fffUsually$ccc suggests.'),
 		],
 	},
 	{

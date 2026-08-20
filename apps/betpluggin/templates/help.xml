@@ -14,6 +14,10 @@
   The manialink wrapper is added by PyPlanet's UI manager; templates only provide the body.
 -->
 <frame pos="0 17" z-index="150">
+  <!-- The stock BgCardList style graphic is barely opaque on its own: fine for the list windows, which
+       are meant to float thinly over the race, but this window is read start to finish, not glanced at,
+       so it needs a real backdrop or the track behind it fights every line of text. -->
+  <quad pos="0 62.5" size="220 137" z-index="-51" halign="center" valign="top" bgcolor="0A0A18F0"/>
   <quad pos="0 62.5" size="220 137" z-index="-50" halign="center" valign="top" style="Bgs1InRace" substyle="BgCardList"/>
   <quad pos="0 62.5" size="220 137" z-index="-48" halign="center" valign="top" bgcolor="{{ accent_tint|default('00000000', true) }}"/>
 
