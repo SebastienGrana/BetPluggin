@@ -14,6 +14,10 @@ a time from 2011 measures exactly what a time from 2026 measures, and neither de
 discounted for its age. And a server like lolmaps has fifteen years of this lying in its database
 already -- tens of thousands of races that would otherwise have to be waited for one map at a time.
 
+Which is also why nothing here is allowed to hold the whole job in memory. Fifteen years of
+finishes is not a list you build and then write; it is a stream you walk once, keeping only the
+race currently being assembled. See `_iter_races`.
+
 What the reconstruction cannot recover is stated plainly rather than papered over:
 
 - Only drivers who finished appear, because only they left a score behind. That is the same rule
@@ -51,15 +55,26 @@ enough to cut, and the result would be a single "race" with hundreds of drivers 
 other. Cheaper to drop those than to explain later why one map produced an implausible field.
 """
 
+PAGE_SIZE = 5000
+"""
+Finishes read per round trip.
+
+Small enough that one page is nothing to hold, large enough that a map with a hundred thousand
+finishes is twenty queries rather than a hundred thousand.
+"""
+
+INSERT_BATCH = 500
+"""Rows per INSERT. A fifteen-year import is far past what one statement should carry."""
+
 
 class RaceImporter:
 	"""
 	Turns `stats_scores` into `RaceResult` rows, and reports what it did in enough detail to be
 	trusted or overruled.
 
-	Runs in two passes on purpose: `preview` reads and writes nothing, `run` does the same work and
-	then commits it. An import that rewrites years of history should be something an admin has
-	already seen the shape of before they agree to it.
+	Reads in two modes on purpose: `preview` counts and writes nothing, `run` does the same walk and
+	commits it. An import that rewrites years of history should be something an admin has already
+	seen the shape of before they agree to it.
 	"""
 
 	def __init__(self, app):
@@ -84,100 +99,136 @@ class RaceImporter:
 		rows = list(await Score.execute(Score.select(Score.map_id).distinct()))
 		return sorted({row.map_id for row in rows})
 
-	async def _sessions_for_map(self, map_id, gap, cutoff):
-		"""
-		Cut one map's finishes into races, best first within each.
+	@staticmethod
+	def _close_session(best, started_at, oversized):
+		"""One assembled session, or None when it was never a race worth keeping."""
+		if oversized or len(best) < 2:
+			# Same rule as the live recorder: alone is not a race. See _record_race_results.
+			return None
+		return started_at, sorted(best.values(), key=lambda f: f.score)
 
-		Fetches a single map at a time rather than the whole table: on a server with fifteen years of
-		statistics the full set does not belong in memory, and one map's worth always does.
+	async def _iter_races(self, map_id, gap, cutoff):
 		"""
-		query = Score.select(Score.player_id, Score.score, Score.created_at).where(Score.map_id == map_id)
-		if cutoff is not None:
-			query = query.where(Score.created_at < cutoff)
-		finishes = list(await Score.execute(query.order_by(Score.created_at.asc())))
+		Walk one map's finishes once, yielding (happened_at, ordered_finishes) per race.
 
-		sessions = []
-		current = []
+		Reads in pages keyed on the primary key rather than fetching the map in one go, and keeps only
+		the session being assembled -- so the memory this costs is set by how many people were on the
+		server at once, not by how many finishes the map has collected since 2011.
+
+		Paging on `id` rather than on `created_at` is what makes those pages cheap: `stats_scores` is
+		indexed on map_id alone, so ordering by time would mean sorting the whole map on every page,
+		while ordering by id is served straight from that index. Finishes are appended as they happen,
+		so the two orders agree; where they somehow do not, the effect is a pair of finishes not
+		splitting a session that a stricter reading would have split.
+		"""
+		last_id = 0
+		best = {}
+		started_at = None
 		previous_at = None
-		for finish in finishes:
-			if previous_at is not None and (finish.created_at - previous_at) > gap:
-				sessions.append(current)
-				current = []
-			current.append(finish)
-			previous_at = finish.created_at
-		if current:
-			sessions.append(current)
+		oversized = False
 
-		races = []
-		for session in sessions:
-			# One driver, one result: the best they managed while the map was up, which is what the live
-			# recorder reads off the podium too. Several finishes by the same person is a driver retrying,
-			# not several competitors.
-			best = {}
-			for finish in session:
+		while True:
+			query = Score.select(Score.id, Score.player_id, Score.score, Score.created_at).where(
+				(Score.map_id == map_id) & (Score.id > last_id)
+			)
+			if cutoff is not None:
+				query = query.where(Score.created_at < cutoff)
+			page = list(await Score.execute(query.order_by(Score.id.asc()).limit(PAGE_SIZE)))
+			if not page:
+				break
+
+			for finish in page:
+				last_id = finish.id
+
+				if previous_at is not None and (finish.created_at - previous_at) > gap:
+					race = self._close_session(best, started_at, oversized)
+					if race:
+						yield race
+					best, started_at, oversized = {}, None, False
+
+				previous_at = finish.created_at
+				if started_at is None:
+					started_at = finish.created_at
+
+				if oversized:
+					continue
+
+				# One driver, one result: the best they managed while the map was up, which is what the
+				# live recorder reads off the podium too. Several finishes by the same person is a driver
+				# retrying, not several competitors.
 				known = best.get(finish.player_id)
 				if known is None or finish.score < known.score:
 					best[finish.player_id] = finish
 
-			if len(best) < 2 or len(best) > MAX_FIELD_SIZE:
-				# Same rule as the live recorder: alone is not a race. See _record_race_results.
-				continue
+				if len(best) > MAX_FIELD_SIZE:
+					# Dropped, and dropped now rather than at the end: an implausible field is exactly the
+					# case where holding on to it costs the most.
+					oversized = True
+					best = {}
 
-			ordered = sorted(best.values(), key=lambda f: f.score)
-			races.append((session[0].created_at, ordered))
-		return races
+			if len(page) < PAGE_SIZE:
+				break
 
-	async def collect(self, gap_minutes=DEFAULT_GAP_MINUTES):
+		race = self._close_session(best, started_at, oversized)
+		if race:
+			yield race
+
+	@staticmethod
+	def _rows_for(map_id, happened_at, ordered):
+		return [dict(
+			map=map_id,
+			player=finish.player_id,
+			source=RaceResult.SOURCE_IMPORT,
+			position=position,
+			field_size=len(ordered),
+			points=None,
+			time=finish.score,
+			# Stamped with when the race happened, not when the import ran: these rows are evidence
+			# about a date, and dating them today would lose that.
+			created_at=happened_at,
+			updated_at=happened_at,
+		) for position, finish in enumerate(ordered, start=1)]
+
+	@staticmethod
+	def _blank_stats(cutoff):
+		return dict(races=0, rows=0, maps=0, earliest=None, latest=None, cutoff=cutoff, drivers=0)
+
+	@staticmethod
+	def _account(stats, drivers, map_id, happened_at, ordered):
+		stats['races'] += 1
+		stats['rows'] += len(ordered)
+		stats['earliest'] = happened_at if stats['earliest'] is None else min(stats['earliest'], happened_at)
+		stats['latest'] = happened_at if stats['latest'] is None else max(stats['latest'], happened_at)
+		drivers.update(finish.player_id for finish in ordered)
+
+	async def preview(self, gap_minutes=DEFAULT_GAP_MINUTES):
 		"""
-		Reconstruct every importable race, as rows ready for RaceResult.
+		Count what an import would produce, writing nothing.
 
-		Returns (rows, stats). Reads only -- `preview` and `run` share this so what an admin is shown
-		is what an admin gets.
+		Walks exactly what `run` walks, so the numbers an admin agrees to are the numbers they get.
+		Keeps no rows: only the tally, and the set of drivers seen, which is bounded by how many people
+		have ever played on the server rather than by how much they played.
 		"""
 		gap = datetime.timedelta(minutes=gap_minutes)
 		cutoff = await self.cutoff()
-
-		rows = []
-		races = 0
-		maps = 0
-		earliest = None
-		latest = None
+		stats = self._blank_stats(cutoff)
+		drivers = set()
 
 		for map_id in await self._map_ids():
-			found = await self._sessions_for_map(map_id, gap, cutoff)
-			if not found:
-				continue
-			maps += 1
-			for happened_at, ordered in found:
-				races += 1
-				earliest = happened_at if earliest is None else min(earliest, happened_at)
-				latest = happened_at if latest is None else max(latest, happened_at)
-				for position, finish in enumerate(ordered, start=1):
-					rows.append(dict(
-						map=map_id,
-						player=finish.player_id,
-						source=RaceResult.SOURCE_IMPORT,
-						position=position,
-						field_size=len(ordered),
-						points=None,
-						time=finish.score,
-						# Stamped with when the race happened, not when the import ran: these rows are
-						# evidence about a date, and dating them today would lose that.
-						created_at=happened_at,
-						updated_at=happened_at,
-					))
+			counted = stats['races']
+			async for happened_at, ordered in self._iter_races(map_id, gap, cutoff):
+				self._account(stats, drivers, map_id, happened_at, ordered)
+			if stats['races'] > counted:
+				stats['maps'] += 1
 
-		return rows, dict(
-			races=races, rows=len(rows), maps=maps,
-			earliest=earliest, latest=latest, cutoff=cutoff,
-			drivers=len({row['player'] for row in rows}),
-		)
+		stats['drivers'] = len(drivers)
+		return stats
 
 	async def existing(self):
-		rows = list(await RaceResult.execute(
+		"""How many imported rows are stored. Counted in the database, not by fetching them."""
+		return await RaceResult.objects.count(
 			RaceResult.select().where(RaceResult.source == RaceResult.SOURCE_IMPORT)
-		))
-		return len(rows)
+		)
 
 	async def clear(self):
 		"""Remove every imported row. Live rows are untouched -- that is what the source column is for."""
@@ -189,19 +240,37 @@ class RaceImporter:
 		"""
 		Replace the imported history with a fresh reconstruction.
 
-		Clears first so running it twice does not double the history, and so a gap that turned out to be
-		badly chosen can simply be run again with a better one.
+		Clears before writing rather than after, because the rows are streamed out as they are found
+		and there is never a complete new history to swap in. The cost of that order is that an import
+		interrupted halfway leaves a partial one behind; the cost of the other order would be holding
+		fifteen years of rows in memory to avoid it. Running it again fixes a partial import, which is
+		the same thing that fixes a badly chosen gap.
 		"""
-		rows, stats = await self.collect(gap_minutes=gap_minutes)
-		removed = await self.clear()
+		gap = datetime.timedelta(minutes=gap_minutes)
+		cutoff = await self.cutoff()
+		stats = self._blank_stats(cutoff)
+		drivers = set()
 
-		# In batches because a fifteen-year import is far past what one INSERT should carry.
-		for start in range(0, len(rows), 500):
-			await RaceResult.execute(RaceResult.insert_many(rows[start:start + 500]))
+		stats['removed'] = await self.clear()
+		pending = []
 
-		stats['removed'] = removed
+		for map_id in await self._map_ids():
+			counted = stats['races']
+			async for happened_at, ordered in self._iter_races(map_id, gap, cutoff):
+				self._account(stats, drivers, map_id, happened_at, ordered)
+				pending.extend(self._rows_for(map_id, happened_at, ordered))
+				while len(pending) >= INSERT_BATCH:
+					await RaceResult.execute(RaceResult.insert_many(pending[:INSERT_BATCH]))
+					del pending[:INSERT_BATCH]
+			if stats['races'] > counted:
+				stats['maps'] += 1
+
+		if pending:
+			await RaceResult.execute(RaceResult.insert_many(pending))
+
+		stats['drivers'] = len(drivers)
 		logger.info(
 			'BetPluggin: imported %d race(s) as %d row(s) from the server statistics, replacing %s.',
-			stats['races'], stats['rows'], removed
+			stats['races'], stats['rows'], stats['removed']
 		)
 		return stats

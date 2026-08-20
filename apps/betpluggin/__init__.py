@@ -2572,7 +2572,7 @@ class BetplugginApp(AppConfig):
 			)
 			return
 
-		rows, stats = await importer.collect(gap_minutes=gap)
+		stats = await importer.preview(gap_minutes=gap)
 		already = await importer.existing()
 
 		if not stats['races']:
