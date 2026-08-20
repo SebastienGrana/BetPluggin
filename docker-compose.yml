@@ -16,6 +16,16 @@ services:
       # is broken on this dedicated server build, see OnZ Bot's mapupload/context.txt. A named volume
       # isn't reachable from a plain host process; a bind mount is.
       - ./docker/tm-dedicated-userdata:/app/dedicated/UserData
+      # discord_record_alert lives in its own repository because it is a general-purpose plugin, not
+      # part of BetPluggin. Mounted in rather than copied so it can be developed and tested here
+      # without keeping two copies in sync. If the sibling checkout is missing, Docker creates an
+      # empty folder here and PyPlanet fails to start on the 'apps.discord_record_alert' entry in
+      # settings/apps.py -- clone it next to this repository, or drop both lines:
+      #
+      #   git clone https://github.com/SebastienGrana/Discord-Local-Record-Alert.git discord_record_alert
+      #
+      # The target folder name is not optional: it is the Python package name apps.py refers to.
+      - ../discord_record_alert:/project/apps/discord_record_alert
     restart: unless-stopped
     depends_on:
       db:

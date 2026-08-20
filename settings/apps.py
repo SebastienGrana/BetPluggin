@@ -29,5 +29,9 @@ APPS = {
 
 		# Our custom betting plugin.
 		'apps.betpluggin',
+
+		# Announces top-N local records on Discord. Its own repository, bind-mounted into
+		# apps/discord_record_alert by docker-compose.yml -- see the comment there.
+		'apps.discord_record_alert',
 	]
 }
