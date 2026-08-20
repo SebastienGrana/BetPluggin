@@ -481,10 +481,14 @@ class BetplugginApp(AppConfig):
 				description='Show BetPluggin admin commands help.'
 			),
 
+			# `/help bet`. The flat `/help` belongs to PyPlanet, which uses it to list every public
+			# command on the server; taking it over would hide the rest of the server's commands behind
+			# one plugin's help. A namespaced command wins over the flat one, so `/help bet` reaches us
+			# while `/help` on its own still does what everybody expects it to.
 			Command(
-				command='help', target=self.chat_help_public,
-				description='Show BetPluggin public commands help.'
-			).add_param(name='topic', type=str, required=False, help='Topic (e.g., "bet") or leave empty.'),
+				command='bet', namespace='help', target=self.chat_help_public,
+				description='Open the BetPluggin help window.'
+			).add_param(name='topic', type=str, required=False, help='Page to open on, or leave empty.'),
 
 			# `/bet help`. It was missing until now, which is the kind of gap you only find by watching
 			# someone use the plugin: the welcome message says "/help bet", every other feature is a
@@ -492,13 +496,6 @@ class BetplugginApp(AppConfig):
 			# Namespaced commands win over the flat `/bet`, the same way `/bet market` already does.
 			Command(
 				command='help', namespace='bet', target=self.chat_help_public,
-				description='Open the BetPluggin help window.'
-			).add_param(name='topic', type=str, required=False, help='Page to open on, or leave empty.'),
-
-			# The server is French-speaking. The window itself is in English (so is the rest of the game),
-			# but nobody should have to guess the English word for "aide" to find out where the help is.
-			Command(
-				command='aide', target=self.chat_help_public,
 				description='Open the BetPluggin help window.'
 			).add_param(name='topic', type=str, required=False, help='Page to open on, or leave empty.'),
 		)
@@ -2930,15 +2927,16 @@ class BetplugginApp(AppConfig):
 
 	async def chat_help_public(self, player, data=None, **kwargs):
 		"""
-		Open the help window. `/help`, `/help bet`, `/bet help` and `/aide` all arrive here.
+		Open the help window. Both `/help bet` and `/bet help` arrive here, with an optional page name
+		after them. The flat `/help` is PyPlanet's own command list and is deliberately left alone.
 
 		This printed fourteen lines of chat until now. The chat buffer holds eight or ten, so the first
 		half had scrolled off the screen before the second half was written -- and a player who wanted to
 		re-read one line had to spam the whole thing again in front of everybody. The window holds all of
 		it at once, stays up while you look at what it describes, and closes when it has been read.
 
-		An unknown topic opens the front page rather than erroring: somebody typing /help followed by a
-		word is asking for help, and answering that with "unknown topic" is a strange thing to do.
+		An unknown topic opens the front page rather than erroring: somebody typing /help bet followed by
+		a word is asking for help, and answering that with "unknown topic" is a strange thing to do.
 		"""
 		topic = data.topic if data and hasattr(data, 'topic') and data.topic else None
 		topic = topic.lower() if topic else None
@@ -2950,7 +2948,7 @@ class BetplugginApp(AppConfig):
 
 		await self.instance.chat(
 			'{}$ff0Help is open on your screen -- the rules, the duels, and every command. Type '
-			'$fff/bet help$ff0 to bring it back, or click the $fff?$ff0 in the corner of any '
+			'$fff/help bet$ff0 to bring it back, or click the $fff?$ff0 in the corner of any '
 			'BetPluggin window.'.format(CHAT_PREFIX), player
 		)
 
