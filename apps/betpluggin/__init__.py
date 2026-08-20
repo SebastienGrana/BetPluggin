@@ -329,38 +329,79 @@ class BetplugginApp(AppConfig):
 		self.hooked_votes = []
 
 	async def on_start(self):
+		# Two families, because this plugin does two things and pretending otherwise is what made the
+		# command list unmemorable: everything about *money* lives under `/bet ...`, and everything about
+		# *driving* -- duels, pace -- is a plain command, because a duel is still a duel when nobody has
+		# staked anything on it.
+		#
+		# Order in this list is not cosmetic. The command manager walks the registered commands and takes
+		# the first one that matches, and plain `/bet` matches `/bet <anything>` -- so it has to come
+		# after its own sub-commands, or `/bet market` would be read as a wager on a player called
+		# "market". The cost of that arrangement is that the five sub-command words below are reserved:
+		# a player logged in as `top` cannot be backed by typing their login. The market window's
+		# one-click buttons still reach them.
+		#
+		# The old flat names are kept as separate entries rather than as aliases, because a namespaced
+		# command never matches without its namespace (Command.match pops the namespace first). Nobody's
+		# muscle memory gets broken by a tidy-up.
 		await self.instance.command_manager.register(
+			Command(
+				command='market', namespace='bet', target=self.chat_open_market,
+				description='Open the betting window: online players, live multipliers and one-click bets.'
+			),
+
+			Command(
+				command='mine', namespace='bet', target=self.chat_my_bets,
+				description='Show your active bet(s) for the current period.'
+			),
+
+			Command(
+				command='wallet', namespace='bet', target=self.chat_my_stats,
+				description='Show your BetPluggin wagering history. Your live Planets balance is shown '
+							'in your game client.'
+			),
+
+			Command(
+				command='top', namespace='bet', target=self.chat_leaderboard,
+				description='Open the all-time betting leaderboard.'
+			),
+
+			Command(
+				command='targets', namespace='bet', target=self.chat_targets,
+				description='Who is worth betting on: how often each player is backed, how often they '
+							'deliver, and the badges they have earned.'
+			),
+
 			Command(
 				command='bet', target=self.chat_bet,
 				description='Bet planets that a player will win the current period. Usage: /bet <login> <amount>'
 			).add_param(name='login', type=str, required=False, help='Login of the player you think will win.')
 			 .add_param(name='amount', type=int, required=False, help='Amount of planets to bet.'),
 
+			# The short forms. Same targets, kept because they are what people already type.
 			Command(
 				command='betmarket', aliases=['market', 'odds'], target=self.chat_open_market,
-				description='Open the betting window: online players, live multipliers and one-click bets.'
+				description='Short for /bet market.'
 			),
 
 			Command(
 				command='mybet', aliases=['bets'], target=self.chat_my_bets,
-				description='Show your active bet(s) for the current period.'
+				description='Short for /bet mine.'
 			),
 
 			Command(
 				command='wallet', aliases=['stats', 'betstats'], target=self.chat_my_stats,
-				description='Show your BetPluggin wagering history. Your live Planets balance is shown '
-							'in your game client.'
+				description='Short for /bet wallet.'
 			),
 
 			Command(
 				command='bettop', aliases=['betladder'], target=self.chat_leaderboard,
-				description='Open the all-time betting leaderboard.'
+				description='Short for /bet top.'
 			),
 
 			Command(
 				command='bettargets', aliases=['targets', 'cotes'], target=self.chat_targets,
-				description='Who is worth betting on: how often each player is backed, how often they '
-							'deliver, and the badges they have earned.'
+				description='Short for /bet targets.'
 			),
 
 			Command(
@@ -410,10 +451,16 @@ class BetplugginApp(AppConfig):
 			),
 
 			Command(
-				command='raceimport', target=self.chat_admin_race_import, admin=True,
+				command='import', namespace='bet', target=self.chat_admin_race_import, admin=True,
 				perms='betpluggin:manage_betting',
 				description='Rebuild past races from the server statistics. Shows what it would do; '
 							'add "confirm" to write, or "clear" to undo.'
+			).add_param(name='action', type=str, required=False, help='"confirm", "clear", or nothing to preview.')
+			 .add_param(name='gap', type=int, required=False, help='Minutes of quiet that separate two races.'),
+
+			Command(
+				command='raceimport', target=self.chat_admin_race_import, admin=True,
+				perms='betpluggin:manage_betting', description='Short for //bet import.'
 			).add_param(name='action', type=str, required=False, help='"confirm", "clear", or nothing to preview.')
 			 .add_param(name='gap', type=int, required=False, help='Minutes of quiet that separate two races.'),
 
@@ -2401,7 +2448,7 @@ class BetplugginApp(AppConfig):
 			example = others[0] if others else 'PlayerName'
 			await self.instance.chat(
 				'$i$f00Usage: $fff/bet <login> <amount>$f00 -- e.g. $fff/bet {} 50$f00 to wager 50 planets. '
-				'Or open $fff/betmarket$f00 for a list of players and quick-bet buttons.'.format(example),
+				'Or open $fff/bet market$f00 for a list of players and quick-bet buttons.'.format(example),
 				player
 			)
 			return
@@ -2488,7 +2535,7 @@ class BetplugginApp(AppConfig):
 		if not active and not pending:
 			if self.market_is_open:
 				await self.instance.chat(
-					'$f00No active bet this period. Use $fff/bet <login> <amount>$f00 or $fff/betmarket$f00 to place one.',
+					'$f00No active bet this period. Use $fff/bet <login> <amount>$f00 or $fff/bet market$f00 to place one.',
 					player
 				)
 			else:
@@ -2513,7 +2560,7 @@ class BetplugginApp(AppConfig):
 		stats = await self.get_player_stats(player.login)
 		if not stats or stats['bets'] == 0:
 			await self.instance.chat(
-				'$aaaNo resolved bets yet — place your first bet with $fff/bet <login> <amount>$aaa or $fff/betmarket$aaa!',
+				'$aaaNo resolved bets yet — place your first bet with $fff/bet <login> <amount>$aaa or $fff/bet market$aaa!',
 				player
 			)
 			return
@@ -2719,7 +2766,7 @@ class BetplugginApp(AppConfig):
 				), player
 			)
 		await self.instance.chat(
-			'{}$ff0Use $fff//raceimport confirm$ff0 to write it, or $fff//raceimport confirm <gap>$ff0 '
+			'{}$ff0Use $fff//bet import confirm$ff0 to write it, or $fff//bet import confirm <gap>$ff0 '
 			'with a different session gap (currently $fff{}$ff0 min).'.format(CHAT_PREFIX, gap), player
 		)
 
@@ -2729,14 +2776,17 @@ class BetplugginApp(AppConfig):
 			await self.instance.chat('$f00Unknown help topic. Use /help bet for betting commands.', player)
 			return
 
-		await self.instance.chat('$ff0--- BetPluggin Public Commands ---', player)
+		# Grouped the way the commands themselves are: money under /bet, driving on its own. A player who
+		# remembers only "/bet" can find the first half, and only "/duel" the second.
+		await self.instance.chat('$ff0--- Betting: everything starts with $fff/bet$ff0 ---', player)
 		await self.instance.chat('$fff/bet <login> <amount>$ff0 - Bet planets on a player winning the current period.', player)
-		await self.instance.chat('$fff/betmarket$ff0 (or /market, /odds) - Open the betting window: live multipliers and one-click bets.', player)
-		await self.instance.chat('$fff/mybet$ff0 (or /bets) - Show your active bet(s) for the current period.', player)
-		await self.instance.chat('$fff/wallet$ff0 (or /stats, /betstats) - Show your betting history and stats.', player)
-		await self.instance.chat('$fff/bettop$ff0 (or /betladder) - Open the all-time betting leaderboard.', player)
-		await self.instance.chat('$fff/bettargets$ff0 (or /targets, /cotes) - Who is worth betting on: past wins, usual multiplier and badges.', player)
-		await self.instance.chat('$fff/duel <login> <amount>$ff0 - Challenge a player: whoever finishes ahead takes the stake. Also from the $fffDuel$ff0 button in /betmarket.', player)
+		await self.instance.chat('$fff/bet market$ff0 (or /market, /odds) - Open the betting window: live multipliers and one-click bets.', player)
+		await self.instance.chat('$fff/bet mine$ff0 (or /mybet, /bets) - Show your active bet(s) for the current period.', player)
+		await self.instance.chat('$fff/bet wallet$ff0 (or /wallet, /stats) - Show your betting history and stats.', player)
+		await self.instance.chat('$fff/bet top$ff0 (or /bettop) - Open the all-time betting leaderboard.', player)
+		await self.instance.chat('$fff/bet targets$ff0 (or /targets, /cotes) - Who is worth betting on: past wins, usual multiplier and badges.', player)
+		await self.instance.chat('$ff0--- Driving: duels and pace ---', player)
+		await self.instance.chat('$fff/duel <login> <amount>$ff0 - Challenge a player: whoever finishes ahead takes the stake. Also from the $fffDuel$ff0 button in /bet market.', player)
 		await self.instance.chat('$fff/accept <amount>$ff0 - Accept the duel you were challenged to (or use the popup window).', player)
 		await self.instance.chat('$fff/decline$ff0 (or /refuse) - Turn down the duel you were challenged to. Nothing is charged.', player)
 		await self.instance.chat('$fff/duelbet <login> <amount>$ff0 (or /back) - Back one of the two players in the running duel. One-click buttons appear on the widget while a duel runs.', player)
@@ -2748,7 +2798,7 @@ class BetplugginApp(AppConfig):
 		await self.instance.chat('$fff//bet open$ff0 - Force-open betting for the current period.', player)
 		await self.instance.chat('$fff//bet close$ff0 - Close betting for the current period early.', player)
 		await self.instance.chat('$fff//bet help$ff0 - Show this admin command list.', player)
-		await self.instance.chat('$fff//raceimport$ff0 - Rebuild past races from the server statistics. Shows what it would do; $fff//raceimport confirm$ff0 writes it, $fff//raceimport clear$ff0 undoes it.', player)
+		await self.instance.chat('$fff//bet import$ff0 (or //raceimport) - Rebuild past races from the server statistics. Shows what it would do; $fff//bet import confirm$ff0 writes it, $fff//bet import clear$ff0 undoes it.', player)
 		await self.instance.chat('$ff0--- PyPlanet commands betting reacts to on its own ---', player)
 		await self.instance.chat('$fff//skip$ff0, $fff//next$ff0, $fff//previous$ff0, $fff//restart$ff0 - Betting is called off and everyone is refunded: the map has no honest winner.', player)
 		await self.instance.chat('$fff//extend$ff0 - The betting window is re-measured against the map\'s new length (percentage windows only).', player)
