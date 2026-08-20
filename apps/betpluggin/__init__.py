@@ -306,6 +306,15 @@ class BetplugginApp(AppConfig):
 		# See _tick_market_countdown for why this is not simply a 1s loop.
 		self.market_tick_task = None
 
+		# Makes the widget's "PLACE A BET" button pulse between two colours while betting is open, so it
+		# catches the eye of someone glancing over mid-race rather than sitting there as one more static
+		# panel. Deliberately its own task rather than folded into _tick_market_countdown: that one only
+		# pushes to players with the countdown visibly changing and slows down the further betting is from
+		# closing, exactly to avoid a 1s full-widget re-render for the whole window (see its own comment).
+		# The pulse redraws the widget only -- not the market window, which has nothing to pulse -- so it
+		# stays cheap enough to run at a steady 1s for as long as the window is open.
+		self.market_pulse_task = None
+
 		# When the betting window last shut on a pool that is still alive (time.time()), or None. Only
 		# used to grant late payment confirmations a short grace -- see _within_stake_grace.
 		self.market_closed_at = None
@@ -1124,6 +1133,7 @@ class BetplugginApp(AppConfig):
 			await self._schedule_market_close()
 		else:
 			self._cancel_market_close()
+		self.market_pulse_task = asyncio.ensure_future(self._pulse_market_cta())
 
 	def _cancel_market_close(self, keep_deadline=False):
 		"""
@@ -1142,6 +1152,33 @@ class BetplugginApp(AppConfig):
 		tick, self.market_tick_task = self.market_tick_task, None
 		if tick and not tick.done():
 			tick.cancel()
+
+		self._cancel_market_pulse()
+
+	def _cancel_market_pulse(self):
+		"""Stop the CTA pulse, if running. Safe to call when there isn't one."""
+		pulse, self.market_pulse_task = self.market_pulse_task, None
+		if pulse and not pulse.done():
+			pulse.cancel()
+
+	async def _pulse_market_cta(self):
+		"""
+		Redraw just the widget once a second while the market is open, so the "PLACE A BET" button
+		alternates colour instead of sitting there as one more static panel. Runs for the whole open
+		window, not only the closing seconds -- see BetWidget.get_context_data for the colour swap
+		itself, and the comment on self.market_pulse_task for why this is its own task rather than
+		riding on _tick_market_countdown.
+		"""
+		try:
+			while True:
+				if not self.market_is_open:
+					return
+				await asyncio.sleep(1)
+				if not self.market_is_open:
+					return
+				await self.widget.display()
+		except asyncio.CancelledError:
+			pass
 
 	async def _period_time_limit(self):
 		"""

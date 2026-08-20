@@ -434,7 +434,13 @@ class BetWidget(WidgetView):
 		# shut the window is still worth opening to read the pool.
 		if self.app.market_is_open:
 			cta_label = 'PLACE A BET'
-			cta_color = '09F4FFE0'
+			# Alternates once a second (driven by _pulse_market_cta) so the button catches the eye of
+			# someone glancing over mid-race. Both colours are bright enough to read as "click me"; only
+			# the hue changes, so the button never dims or looks disabled mid-pulse.
+			if int(time.time()) % 2 == 0:
+				cta_color = '09F4FFE0'
+			else:
+				cta_color = 'FFC93CE0'
 			cta_text_color = '00141AFF'
 		else:
 			cta_label = 'BETTING MARKET'
