@@ -873,6 +873,13 @@ class BetplugginApp(AppConfig):
 		- ACTIVE bets for any other (older) map: that period is definitely over and can never be
 		  resolved properly anymore, so refund them right away instead of leaving them stuck.
 		- PENDING bets: closed out as declined, never re-armed and never auto-refunded. See below.
+
+		Duel stakes take none of those paths and are handed to DuelManager.recover() instead. They used
+		to fall through here like everything else, which put them in `current_bets` -- the *market's*
+		pool -- where they were settled on "did this login win the map", pari-mutuel, alongside bets
+		that had nothing to do with them. A duel asks a different question entirely, so that was two
+		players' planets being redistributed under a rule neither of them agreed to. PENDING duel rows
+		do stay here: the reason not to auto-refund an unconfirmed stake is about bills, not bet types.
 		"""
 		orphaned = await Bet.execute(
 			Bet.select(Bet, Player).join(Player).where(Bet.state.in_([Bet.STATE_PENDING, Bet.STATE_ACTIVE]))
@@ -882,8 +889,13 @@ class BetplugginApp(AppConfig):
 
 		current_map_id = current_map.get_id()
 		unsettled = []
+		duel_stakes = []
 
 		for bet in orphaned:
+			if bet.state == Bet.STATE_ACTIVE and bet.bet_type in (Bet.TYPE_DUEL, Bet.TYPE_DUEL_SIDE):
+				duel_stakes.append(bet)
+				continue
+
 			if bet.state == Bet.STATE_PENDING:
 				# Never re-arm pending_stakes[bet.stake_bill_id]. Bill ids are handed out by the
 				# *dedicated server* and restart at 1 along with it, so a recovered id 1 would be
@@ -916,6 +928,11 @@ class BetplugginApp(AppConfig):
 					bet.bettor, bet.amount,
 					"PyPlanet restarted after this bet's map already ended."
 				)
+
+		# After the market's own pool is back, so a rebuilt duel and the market it was played alongside
+		# start from the same picture -- and so the "duel is still on" line lands after, not in the
+		# middle of, the market's own recovery chatter.
+		await self.duels.recover(duel_stakes, current_map)
 
 		if unsettled:
 			logger.warning(

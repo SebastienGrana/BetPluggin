@@ -640,6 +640,126 @@ class DuelManager:
 		await self.app._refresh_ui()
 
 	# ------------------------------------------------------------------
+	# Surviving a restart
+	# ------------------------------------------------------------------
+
+	async def recover(self, bets, current_map):
+		"""
+		Put a duel back on its feet after PyPlanet restarted in the middle of it.
+
+		Everything about a running duel lived in `self.duel`, which is memory and dies with the process --
+		but the stakes are rows, and the rows carry the whole deal: who staked what, against whom, on
+		which map. Two TYPE_DUEL rows still ACTIVE on the map that is *still running* are a duel that was
+		agreed, paid for, and never settled, so it is rebuilt here and rides to the podium as if nothing
+		had happened.
+
+		Without this the app did something considerably worse than forget the duel: the generic recovery
+		swept those rows into the market's pool, where they were settled pari-mutuel on "did this login
+		win the map". A duel does not ask that question -- "X finishes ahead of Y" is true at 12th and
+		13th -- so both duellists' planets were redistributed under a rule neither of them agreed to.
+
+		Anything that cannot be rebuilt into a duel is refunded on the spot: a stake whose map is over,
+		a lone side whose partner row never made it to ACTIVE, a spectator bet on a duel that isn't
+		coming back. Refunding is safe here in a way it is not for PENDING stakes -- ACTIVE means the
+		server already told us the planets arrived.
+
+		:param bets: ACTIVE duel-type Bet rows found orphaned at startup, with `bettor` already joined.
+		:param current_map: the map running right now, or None.
+		"""
+		if not bets:
+			return
+
+		current_map_id = current_map.get_id() if current_map else None
+		absorbed = set()
+
+		# `self.duel` is None at startup by construction; the guard is here so that a future caller
+		# cannot silently overwrite a live duel with an old one out of the database.
+		sides = [b for b in bets if b.bet_type == Bet.TYPE_DUEL and b.map_id == current_map_id]
+		if self.duel is None and len(sides) == 2:
+			# The challenger is billed first (see accept()), so the lower id is the challenger. It only
+			# decides which name is read out first and which side spectators see as "challenger" -- the
+			# settlement itself is symmetric.
+			sides.sort(key=lambda b: b.id)
+			challenger_bet, opponent_bet = sides
+			duellists = {challenger_bet.target_login.lower(), opponent_bet.target_login.lower()}
+			named = {
+				(challenger_bet.opponent_login or '').lower(),
+				(opponent_bet.opponent_login or '').lower(),
+			}
+
+			# Two duel rows on one map is not proof they are two sides of the *same* duel. They are only
+			# that if each one names the other; anything else gets refunded rather than paired up on a
+			# guess, because the guess would decide who takes whose planets.
+			if named == duellists and len(duellists) == 2:
+				spectators = [
+					b for b in bets
+					if b.bet_type == Bet.TYPE_DUEL_SIDE and b.map_id == current_map_id
+					and (b.target_login or '').lower() in duellists
+					and (b.opponent_login or '').lower() in duellists
+				]
+
+				self.duel = dict(
+					state=STATE_ACTIVE,
+					map=current_map,
+					map_id=current_map_id,
+					challenger=challenger_bet.bettor, opponent=opponent_bet.bettor,
+					challenger_amount=challenger_bet.amount, opponent_amount=opponent_bet.amount,
+					challenger_bet=challenger_bet, opponent_bet=opponent_bet,
+					# ACTIVE is the state the bill confirmation writes, so both sides are paid by
+					# definition -- nothing else can have put these rows in this state.
+					challenger_paid=True, opponent_paid=True,
+					spectator_bets=[
+						dict(side='spectator', bet=b, player=b.bettor, amount=b.amount,
+							 target_login=b.target_login)
+						for b in spectators
+					],
+					# Nothing left to time out (the offer was answered) and no window to tear down (the
+					# challenge view only exists while the offer is open).
+					timeout_task=None,
+					view=None,
+				)
+				absorbed = {challenger_bet.id, opponent_bet.id} | {b.id for b in spectators}
+
+				challenger, opponent = self.duel['challenger'], self.duel['opponent']
+				# Said out loud on purpose. The two of them watched the server blink; without this line
+				# they have no way of knowing whether their planets are still riding on anything.
+				await self.app.instance.chat(
+					'{}$f80The server restarted -- the duel is still on: $fff{}$z$s$f80 ({}) vs '
+					'$fff{}$z$s$f80 ({}), settled at the podium as agreed.'.format(
+						self.app.CHAT_PREFIX,
+						challenger.nickname or challenger.login, self.duel['challenger_amount'],
+						opponent.nickname or opponent.login, self.duel['opponent_amount'],
+					)
+				)
+				if spectators:
+					await self.app.instance.chat(
+						'{}$ff0{} bet{} on it survived the restart too.'.format(
+							self.app.CHAT_PREFIX, len(spectators),
+							'' if len(spectators) == 1 else 's'
+						)
+					)
+
+		leftover = [b for b in bets if b.id not in absorbed]
+		if not leftover:
+			await self.app._refresh_ui()
+			return
+
+		for bet in leftover:
+			bet.state = Bet.STATE_RESOLVED
+			bet.won = None
+			bet.payout = 0
+			await bet.save()
+			await self.app._refund(
+				bet.bettor, bet.amount, 'PyPlanet restarted before this duel could be settled.'
+			)
+
+		logger.info(
+			'BetPluggin: refunded %d duel stake(s) that could not be put back together after the '
+			'restart (bet ids: %s).', len(leftover), ', '.join(str(b.id) for b in leftover)
+		)
+		await self.app._refresh_ui()
+
+	# ------------------------------------------------------------------
 	# Resolution
 	# ------------------------------------------------------------------
 
