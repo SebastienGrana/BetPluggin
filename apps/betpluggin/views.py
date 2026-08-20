@@ -4,6 +4,7 @@ podium, and two interactive list views (the live betting market with quick-bet b
 all-time player leaderboard).
 """
 import asyncio
+import math
 import time
 
 from collections import OrderedDict
@@ -131,6 +132,83 @@ class BetListStyleMixin:
 	# here lets each button carry just its amount. None (the default) leaves the strip empty, which is
 	# what the windows without buttons want.
 	actions_header = None
+
+	# The list template lays a row out across 218 units, shared between the columns and the strip of
+	# action buttons on the right. Nothing upstream checks that the two actually fit: `left` is just
+	# accumulated column by column, and a strip that comes out wider than the room left for it is drawn
+	# straight over the last columns instead of being flagged. That is exactly what happened here -- five
+	# quick-bet amounts, each held to a minimum readable width, added up to 83 units where the columns
+	# had left 70, so "Bet" and its buttons sat on top of "If they win".
+	ROW_WIDTH = 218
+
+	# A column header is drawn bold at textsize 1.3 with one leading space. Measured against the rendered
+	# window, a character at that size is a shade under 1.45 units wide. Columns are never squeezed below
+	# what this gives: a truncated *value* is a smaller lie than a truncated *header*, because a header
+	# is the only thing telling you what the numbers under it mean.
+	HEADER_UNIT_PER_CHAR = 1.45
+
+	@classmethod
+	def header_width(cls, name):
+		"""Units needed to draw `name` in the header strip without spilling into the next column."""
+		return int(math.ceil((len(name) + 1) * cls.HEADER_UNIT_PER_CHAR))
+
+	async def get_fields(self):
+		"""
+		Fit the declared columns and the action buttons into one row, headers first.
+
+		Widths in `fields` are what each column would *like*. The buttons take what they need, and what is
+		left is what the columns actually get. Two corrections come out of that:
+
+		- over budget: the deficit is shared out in proportion to each column's slack -- the room it has
+		  above its own header -- so a wide column of free text gives up most of it and a column of
+		  four-digit numbers gives up nearly none, and no column drops below its header;
+		- under budget with a header that never fitted: the shortfall is topped up from the spare room.
+
+		Doing this here rather than by hand-tuning the numbers is what keeps the layout correct as things
+		move: `quick_bet_amounts` is a free-form setting, so an admin adding a sixth amount would have put
+		the overlap straight back, and a column renamed to something longer would go on quietly spilling
+		into its neighbour the way "Backers' profit" did.
+		"""
+		fields = [dict(field) for field in self.fields]
+		for field in fields:
+			field.setdefault('min_width', self.header_width(field['name']))
+
+		strip = sum(action.get('width', 5) for action in await self.get_actions())
+		spare = self.ROW_WIDTH - strip - sum(field['width'] for field in fields)
+
+		if spare < 0:
+			slack = {id(f): max(f['width'] - f['min_width'], 0) for f in fields}
+			total = sum(slack.values())
+			if not total:
+				return fields
+
+			# Proportional share first, then the rounding remainder to whichever column still has the most
+			# room to spare -- so the row lands on exactly ROW_WIDTH rather than a unit or two over.
+			taken = 0
+			for field in fields:
+				share = min(-spare * slack[id(field)] // total, slack[id(field)])
+				field['width'] -= share
+				taken += share
+
+			for field in sorted(fields, key=lambda f: f['width'] - f['min_width'], reverse=True):
+				if taken >= -spare:
+					break
+				room = min(-spare - taken, field['width'] - field['min_width'])
+				field['width'] -= room
+				taken += room
+			return fields
+
+		# Widest shortfall first: if the spare room runs out, it runs out on the header that was closest to
+		# fitting anyway, not on the one that needed the most help.
+		for field in sorted(fields, key=lambda f: f['min_width'] - f['width'], reverse=True):
+			if spare <= 0:
+				break
+			short = min(field['min_width'] - field['width'], spare)
+			if short > 0:
+				field['width'] += short
+				spare -= short
+
+		return fields
 
 	async def get_context_data(self):
 		context = await super().get_context_data()
@@ -674,14 +752,14 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 			'index': 'pot',
 			'sorting': False,
 			'searching': False,
-			'width': 22,
+			'width': 24,
 		},
 		{
 			'name': 'Multiplier',
 			'index': 'odds',
 			'sorting': False,
 			'searching': False,
-			'width': 18,
+			'width': 17,
 		},
 		# The two history columns below are the whole point of keeping target stats: without them the
 		# only thing distinguishing two players in this list is how much other people happened to bet on
@@ -691,34 +769,36 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 			'index': 'form',
 			'sorting': False,
 			'searching': False,
-			'width': 18,
+			'width': 16,
 		},
 		{
 			'name': 'Usual multiplier',
 			'index': 'avg_odds',
 			'sorting': False,
 			'searching': False,
-			'width': 24,
+			'width': 25,
 		},
 		{
 			'name': 'Your bet',
 			'index': 'your_bet',
 			'sorting': False,
 			'searching': False,
-			'width': 18,
+			'width': 15,
 		},
 		{
 			'name': 'If they win',
 			'index': 'potential_win',
 			'sorting': False,
 			'searching': False,
-			'width': 20,
+			'width': 18,
 		},
 	]
-	# Column widths above total 148, leaving 70 of the list template's 218-unit row for the bet buttons
-	# in get_actions(). They were each two units wider before the "Bet ..." button was added; the room
-	# had to come from somewhere, and a column of numbers loses less to a couple of units than a button
-	# does to being unreadable.
+	# Column widths above total 143, leaving 75 of the list template's 218-unit row for the bet buttons in
+	# get_actions() -- which is exactly what they ask for at five quick amounts. Every width here is also
+	# at or above what its own header needs to be drawn in full, so nothing spills into the next column.
+	# These are wishes rather than promises: get_fields() re-fits them against the strip the buttons
+	# actually come out at, so a sixth configured amount narrows the Player column instead of overlapping
+	# "If they win".
 
 	def __init__(self, app):
 		super().__init__()
@@ -894,12 +974,17 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 	# configured, so adding a fourth or fifth quick amount just makes each button a bit narrower instead
 	# of disappearing.
 	BUTTON_BUDGET = 218 - sum(f['width'] for f in fields)
-	QUICK_BET_MIN_WIDTH = 11
-	CUSTOM_BET_WIDTH = 13
+	# Floors, not sizes: below these the label inside stops being readable. They used to be 11/13/15,
+	# which with five configured amounts asked for 83 units where 70 were free -- get_fields() would now
+	# absorb that, but it would absorb it out of the Player column, and a nickname clipped to make room
+	# for whitespace inside a button is the wrong trade. Measured against the rendered window, "1000"
+	# needs about six units and "Duel" about seven, so all three still have room to spare.
+	QUICK_BET_MIN_WIDTH = 10
+	CUSTOM_BET_WIDTH = 12
 	# The duel entry point lives here rather than as a new "who to bet on" column: this row already
 	# carries a login and a live bet-button strip, so the only new thing a duel button needs is its own
 	# width -- taken from the quick-amount split, same as the custom button was.
-	DUEL_WIDTH = 15
+	DUEL_WIDTH = 13
 
 	# Button colours. Open: the green already used for the "Who to bet on" window, plus gold on the
 	# free-amount button so it reads as the odd one out rather than a sixth preset. Closed: a flat slate
