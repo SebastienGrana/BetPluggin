@@ -209,8 +209,8 @@ TOPICS = [
 			('h', 'Driving'),
 			('b', '$fff/pace$ccc  ($fff/form$ccc, $fff/racetop$ccc)  --  the top drivers board.'),
 			('h', 'This window'),
-			('b', '$fff/help bet$ccc  ($fff/bet help$ccc)  --  opens the page you are reading. Add a page '
-				  'name to land on it, as in $fff/help bet duels$ccc.'),
+			('b', '$fff/bet help$ccc  --  opens the page you are reading. Add a page name to land on '
+				  'it, as in $fff/bet help duels$ccc.'),
 			('p', 'A login is the plain name, not the nickname with the colours in it -- the buttons never '
 				  'get it wrong.'),
 		],

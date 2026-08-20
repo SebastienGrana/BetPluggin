@@ -384,6 +384,21 @@ class BetplugginApp(AppConfig):
 							'the badges they have earned.'
 			),
 
+			# `/bet help`. Must be registered before the flat `/bet <login>` below, or the command
+			# manager -- which takes the first registered command that matches -- reads "help" as a
+			# login and tries to bet on a player called that. Same reason market/mine/wallet/top/targets
+			# all sit above it too.
+			#
+			# There is deliberately no second, shorter way in: PyPlanet's own flat `/help` always wins
+			# over any namespaced command sharing its first word (Command.match only checks the first
+			# token), and `core.pyplanet` starts before every contrib app, so `/help bet` can never be
+			# routed here -- it is swallowed by PyPlanet's own per-command help before this app even
+			# registers. `/bet help` is the only reliable entry point.
+			Command(
+				command='help', namespace='bet', target=self.chat_help_public,
+				description='Open the BetPluggin help window.'
+			).add_param(name='topic', type=str, required=False, help='Page to open on, or leave empty.'),
+
 			Command(
 				command='bet', target=self.chat_bet,
 				description='Bet planets that a player will win the current period. Usage: /bet <login> <amount>'
@@ -481,23 +496,6 @@ class BetplugginApp(AppConfig):
 				description='Show BetPluggin admin commands help.'
 			),
 
-			# `/help bet`. The flat `/help` belongs to PyPlanet, which uses it to list every public
-			# command on the server; taking it over would hide the rest of the server's commands behind
-			# one plugin's help. A namespaced command wins over the flat one, so `/help bet` reaches us
-			# while `/help` on its own still does what everybody expects it to.
-			Command(
-				command='bet', namespace='help', target=self.chat_help_public,
-				description='Open the BetPluggin help window.'
-			).add_param(name='topic', type=str, required=False, help='Page to open on, or leave empty.'),
-
-			# `/bet help`. It was missing until now, which is the kind of gap you only find by watching
-			# someone use the plugin: the welcome message says "/help bet", every other feature is a
-			# `/bet <something>`, so people typed `/bet help` and got a usage line for `/bet <login>`.
-			# Namespaced commands win over the flat `/bet`, the same way `/bet market` already does.
-			Command(
-				command='help', namespace='bet', target=self.chat_help_public,
-				description='Open the BetPluggin help window.'
-			).add_param(name='topic', type=str, required=False, help='Page to open on, or leave empty.'),
 		)
 
 		await self.instance.permission_manager.register(
@@ -1820,7 +1818,7 @@ class BetplugginApp(AppConfig):
 			)
 			await self.instance.chat(
 				'{}$fff/duel <login> <amount>$ff0 challenges another driver head to head. '
-				'$fff/help bet$ff0 lists the rest.'.format(CHAT_PREFIX), player
+				'$fff/bet help$ff0 lists the rest.'.format(CHAT_PREFIX), player
 			)
 		except Exception:
 			# A greeting is never worth taking anything else down with it.
@@ -2927,15 +2925,16 @@ class BetplugginApp(AppConfig):
 
 	async def chat_help_public(self, player, data=None, **kwargs):
 		"""
-		Open the help window. Both `/help bet` and `/bet help` arrive here, with an optional page name
-		after them. The flat `/help` is PyPlanet's own command list and is deliberately left alone.
+		Open the help window. `/bet help` arrives here, with an optional page name after it. There is
+		no `/help bet`: PyPlanet's own flat `/help` always wins that word, so BetPluggin only answers
+		to `/bet help`.
 
 		This printed fourteen lines of chat until now. The chat buffer holds eight or ten, so the first
 		half had scrolled off the screen before the second half was written -- and a player who wanted to
 		re-read one line had to spam the whole thing again in front of everybody. The window holds all of
 		it at once, stays up while you look at what it describes, and closes when it has been read.
 
-		An unknown topic opens the front page rather than erroring: somebody typing /help bet followed by
+		An unknown topic opens the front page rather than erroring: somebody typing /bet help followed by
 		a word is asking for help, and answering that with "unknown topic" is a strange thing to do.
 		"""
 		topic = data.topic if data and hasattr(data, 'topic') and data.topic else None
@@ -2948,7 +2947,7 @@ class BetplugginApp(AppConfig):
 
 		await self.instance.chat(
 			'{}$ff0Help is open on your screen -- the rules, the duels, and every command. Type '
-			'$fff/help bet$ff0 to bring it back, or click the $fff?$ff0 in the corner of any '
+			'$fff/bet help$ff0 to bring it back, or click the $fff?$ff0 in the corner of any '
 			'BetPluggin window.'.format(CHAT_PREFIX), player
 		)
 
