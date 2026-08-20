@@ -1285,7 +1285,7 @@ class BetplugginApp(AppConfig):
 		self.market_closes_at = None
 
 		await self.instance.chat(
-			'{}$ff0Betting is now CLOSED for this period. Good luck!'.format(CHAT_PREFIX)
+			'{}$ff0Betting is now CLOSED for this map. Good luck!'.format(CHAT_PREFIX)
 		)
 		await self._refresh_ui()
 
