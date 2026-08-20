@@ -71,15 +71,15 @@
        ACCENTS). The tinted fills they used to have made the row look like three unrelated warnings. -->
   <quad pos="1.2 -18.8" z-index="2" size="12 2.6" bgcolor="FFFFFF0E" action="{{ id }}__open_targets" scriptevents="1"/>
   <label pos="7.2 -20.1" z-index="3" size="11.4 2.2" textsize="0.8" halign="center" valign="center"
-         textcolor="7FE0A5FF" text="Who to bet on" action="{{ id }}__open_targets" scriptevents="1"/>
+         textcolor="7FE0A5FF" text="Best bets" action="{{ id }}__open_targets" scriptevents="1"/>
 
   <quad pos="14 -18.8" z-index="2" size="12 2.6" bgcolor="FFFFFF0E" action="{{ id }}__open_leaderboard" scriptevents="1"/>
   <label pos="20 -20.1" z-index="3" size="11.4 2.2" textsize="0.8" halign="center" valign="center"
-         textcolor="F0C66AFF" text="Leaderboard" action="{{ id }}__open_leaderboard" scriptevents="1"/>
+         textcolor="F0C66AFF" text="Top bettors" action="{{ id }}__open_leaderboard" scriptevents="1"/>
 
   <quad pos="26.8 -18.8" z-index="2" size="12 2.6" bgcolor="FFFFFF0E" action="{{ id }}__open_wallet" scriptevents="1"/>
   <label pos="32.8 -20.1" z-index="3" size="11.4 2.2" textsize="0.8" halign="center" valign="center"
-         textcolor="B4BCFFFF" text="My stats" action="{{ id }}__open_wallet" scriptevents="1"/>
+         textcolor="7FE0D5FF" text="My stats" action="{{ id }}__open_wallet" scriptevents="1"/>
 
   <!-- The duel band, present only while a duel is. The widget grows by DUEL_BAND_HEIGHT (13.6) to make
        room for it and shrinks back afterwards, so the rest of the time this costs nothing.

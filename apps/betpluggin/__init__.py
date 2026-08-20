@@ -338,8 +338,9 @@ class BetplugginApp(AppConfig):
 		# the first one that matches, and plain `/bet` matches `/bet <anything>` -- so it has to come
 		# after its own sub-commands, or `/bet market` would be read as a wager on a player called
 		# "market". The cost of that arrangement is that the five sub-command words below are reserved:
-		# a player logged in as `top` cannot be backed by typing their login. The market window's
-		# one-click buttons still reach them.
+		# a player logged in as `top` cannot be backed by typing their login. That cost is not silent --
+		# `_handled_as_reserved_word` catches `/bet top 50`, says so, and opens the market, whose
+		# one-click buttons reach the player the command cannot.
 		#
 		# The old flat names are kept as separate entries rather than as aliases, because a namespaced
 		# command never matches without its namespace (Command.match pops the namespace first). Nobody's
@@ -363,13 +364,13 @@ class BetplugginApp(AppConfig):
 
 			Command(
 				command='top', namespace='bet', target=self.chat_leaderboard,
-				description='Open the all-time betting leaderboard.'
+				description='Top bettors: who has made the most planets betting on this server.'
 			),
 
 			Command(
 				command='targets', namespace='bet', target=self.chat_targets,
-				description='Who is worth betting on: how often each player is backed, how often they '
-							'deliver, and the badges they have earned.'
+				description='Best bets: how often each player is bet on, how often they deliver, and '
+							'the badges they have earned.'
 			),
 
 			Command(
@@ -406,7 +407,7 @@ class BetplugginApp(AppConfig):
 
 			Command(
 				command='duels', aliases=['dueltop', 'duelboard'], target=self.chat_duel_board,
-				description='Open the duel record board: who has won the most duels on this server.'
+				description='Top duellists: who has won the most duels on this server.'
 			),
 
 			Command(
@@ -437,7 +438,7 @@ class BetplugginApp(AppConfig):
 
 			Command(
 				command='pace', aliases=['form', 'racetop'], target=self.chat_pace,
-				description='Who actually drives fast here: every race on record, live and imported.'
+				description='Top drivers: who actually drives fast here, over every race on record.'
 			),
 
 			Command(
@@ -1742,9 +1743,63 @@ class BetplugginApp(AppConfig):
 
 		return finished[0]['player'].login
 
+	# How long to wait after a connection before saying hello. A player joining lands in the middle of
+	# every other app's welcome lines, plus the server's own; three more rows in that burst are three
+	# rows nobody reads. By the time this fires the chat has gone quiet again and the map is loaded.
+	WELCOME_DELAY = 8
+
 	async def player_connect(self, player, is_spectator, source, signal, **kwargs):
 		if self.widget:
 			await self.widget.display(player=player)
+
+		# Nothing on screen says what this plugin is. The widget is a box of numbers, the commands have
+		# to be known before they can be typed, and a player who never opens a window never finds out
+		# that any of it exists -- which is the whole reason the market stays empty on a busy server.
+		asyncio.ensure_future(self._welcome(player))
+
+	async def _has_ever_bet(self, player):
+		"""Whether this player has ever staked anything here, in any shape -- map bet, duel or duel side."""
+		rows = await Bet.execute(
+			Bet.select(Bet.id).where(Bet.bettor == player.get_id()).limit(1)
+		)
+		return bool(list(rows))
+
+	async def _welcome(self, player):
+		"""
+		Tell a player who has never bet what the plugin is, once they have landed.
+
+		The condition is "has never bet" rather than "has never connected before", by choice: a first
+		connection is the worst possible moment to be told anything -- the map is loading, the chat is
+		full, half the players alt-tab through it. Anyone who missed it gets it again next time, and it
+		stops for good the moment they place their first stake, which is also the moment they have
+		clearly understood.
+		"""
+		try:
+			await asyncio.sleep(self.WELCOME_DELAY)
+
+			# Re-check on the far side of the sleep: they may have left, or -- since the market window is
+			# reachable from the widget without any of this -- already placed their first bet.
+			if not self.get_online_player(player.login):
+				return
+			if await self._has_ever_bet(player):
+				return
+
+			await self.instance.chat(
+				'{}$ff0Welcome! This server bets: put real $fffPlanets$ff0 on who you think wins the map, '
+				'and settle scores with $fffduels$ff0.'.format(CHAT_PREFIX), player
+			)
+			await self.instance.chat(
+				'{}$fff/bet market$ff0 -- the betting window: everyone online, what backing them pays, '
+				'one click to bet. Nothing leaves your account until you confirm it in your '
+				'client.'.format(CHAT_PREFIX), player
+			)
+			await self.instance.chat(
+				'{}$fff/duel <login> <amount>$ff0 challenges another driver head to head. '
+				'$fff/help bet$ff0 lists the rest.'.format(CHAT_PREFIX), player
+			)
+		except Exception:
+			# A greeting is never worth taking anything else down with it.
+			logger.debug('Could not welcome %s', player.login, exc_info=True)
 
 	async def player_slot_changed(self, player, **kwargs):
 		"""
@@ -2538,7 +2593,73 @@ class BetplugginApp(AppConfig):
 
 		await self.duels.back_side(player, data.login, data.amount)
 
+	async def _handled_as_reserved_word(self, player, kwargs):
+		"""
+		Catch `/bet top 50`, typed by someone who meant to put 50 planets on the player logged in as
+		`top`, and answer it instead of silently opening the ranking.
+
+		`top` is a sub-command of `/bet`, and a sub-command is matched before the plain form -- so the
+		player gets a leaderboard, no bet, no error, and no clue that anything went wrong. They retype
+		it, get the leaderboard again, and conclude the plugin is broken. Nothing about that is visible
+		from inside the handler except one thing: these sub-commands take no arguments, and this one was
+		handed some. See the comment above the command registrations in on_start for why the matching
+		order cannot simply be reversed.
+
+		PyPlanet hands the target `raw` *after* Command.get_params has popped the namespace and the
+		command word off it (get_params mutates the list in place, and handle then passes that same
+		object), so a non-empty `raw` here means exactly "the player typed more than the command".
+
+		Returns True when it has answered and the caller should not open its window.
+		"""
+		extra = [token for token in (kwargs.get('raw') or []) if token]
+		if not extra:
+			return False
+
+		# Which word the player actually typed, taken from the command that matched rather than from a
+		# constant -- the same handler is reachable through several spellings, and quoting back a word
+		# nobody typed is its own small confusion.
+		command = kwargs.get('command')
+		word = getattr(command, 'command', None)
+		if not word:
+			return False
+
+		# Only the namespaced form can be hiding a bet: `/bet top 50` competes with a login, whereas the
+		# flat `/bettop 50` has no bet it could have been mistaken for. And a number is the tell -- nobody
+		# asks a ranking for "50". If somebody really is logged in under that name, the bet was meant, and
+		# the market is where it can still be placed: one click on their row, rather than a command that
+		# cannot be made to work at all.
+		numeric = extra[0].lstrip('-').isdigit()
+		target = self.get_online_player(word) if (getattr(command, 'namespace', None) and numeric) else None
+		if target is not None:
+			await self.instance.chat(
+				'{}$f00"{}" is also the name of a command$ff0, so $fff/bet {} {}$ff0 opened a window '
+				'instead of betting. Nothing was staked.'.format(CHAT_PREFIX, word, word, extra[0]),
+				player
+			)
+			await self.instance.chat(
+				'{}$ff0Use the buttons on $fff{}$ff0\'s row to bet on them -- opening the market '
+				'now.'.format(CHAT_PREFIX, target.nickname or target.login),
+				player
+			)
+			view = BetMarketView(self)
+			await view.display(player=player)
+			return True
+
+		# Nobody online by that name, so this was a misread of the command itself rather than a lost bet.
+		# Say what betting actually looks like, then let the caller open what was asked for -- they may
+		# well have wanted it.
+		await self.instance.chat(
+			'{}$aaa$fff/{}$aaa takes no arguments. To bet, it is $fff/bet <login> <amount>$aaa -- or '
+			'click a row in the market.'.format(
+				CHAT_PREFIX, '{} {}'.format(command.namespace[0], word) if getattr(command, 'namespace', None) else word
+			),
+			player
+		)
+		return False
+
 	async def chat_open_market(self, player, **kwargs):
+		if await self._handled_as_reserved_word(player, kwargs):
+			return
 		if not self.market_is_open:
 			if self.closed_for_reboot:
 				status = 'closed until the next map (PyPlanet just restarted).'
@@ -2554,6 +2675,8 @@ class BetplugginApp(AppConfig):
 		await view.display(player=player)
 
 	async def chat_my_bets(self, player, **kwargs):
+		if await self._handled_as_reserved_word(player, kwargs):
+			return
 		login = player.login.lower()
 		active = [b for b in self.current_bets if b['player'].login.lower() == login]
 		# Stakes from earlier periods stay in pending_stakes so a late confirmation is still refunded,
@@ -2597,10 +2720,14 @@ class BetplugginApp(AppConfig):
 		The sheet is worth opening on an empty account precisely because the record column is full: it is
 		the one window that shows a new player what there is to play for.
 		"""
+		if await self._handled_as_reserved_word(player, kwargs):
+			return
 		view = BetMyStatsView(self)
 		await view.display(player=player)
 
 	async def chat_leaderboard(self, player, **kwargs):
+		if await self._handled_as_reserved_word(player, kwargs):
+			return
 		leaderboard = await self.get_leaderboard(limit=1)
 		if not leaderboard:
 			await self.instance.chat(
@@ -2658,6 +2785,8 @@ class BetplugginApp(AppConfig):
 		await view.display(player=player)
 
 	async def chat_targets(self, player, **kwargs):
+		if await self._handled_as_reserved_word(player, kwargs):
+			return
 		if not await self.get_target_stats():
 			await self.instance.chat(
 				'{}$aaaNothing to show yet -- this board fills up as bets resolve.'.format(CHAT_PREFIX),
@@ -2783,16 +2912,16 @@ class BetplugginApp(AppConfig):
 		await self.instance.chat('$fff/bet <login> <amount>$ff0 - Bet planets on a player winning the current period.', player)
 		await self.instance.chat('$fff/bet market$ff0 (or /market, /odds) - Open the betting window: live multipliers and one-click bets.', player)
 		await self.instance.chat('$fff/bet mine$ff0 (or /mybet, /bets) - Show your active bet(s) for the current period.', player)
-		await self.instance.chat('$fff/bet wallet$ff0 (or /wallet, /stats) - Show your betting history and stats.', player)
-		await self.instance.chat('$fff/bet top$ff0 (or /bettop) - Open the all-time betting leaderboard.', player)
-		await self.instance.chat('$fff/bet targets$ff0 (or /targets, /cotes) - Who is worth betting on: past wins, usual multiplier and badges.', player)
+		await self.instance.chat('$fff/bet wallet$ff0 (or /wallet, /stats) - My stats: your betting, duels and driving, each next to the server record.', player)
+		await self.instance.chat('$fff/bet top$ff0 (or /bettop) - Top bettors: who has made the most planets betting here.', player)
+		await self.instance.chat('$fff/bet targets$ff0 (or /targets, /cotes) - Best bets: who is worth betting on, and what backing them has paid.', player)
 		await self.instance.chat('$ff0--- Driving: duels and pace ---', player)
 		await self.instance.chat('$fff/duel <login> <amount>$ff0 - Challenge a player: whoever finishes ahead takes the stake. Also from the $fffDuel$ff0 button in /bet market.', player)
 		await self.instance.chat('$fff/accept <amount>$ff0 - Accept the duel you were challenged to (or use the popup window).', player)
 		await self.instance.chat('$fff/decline$ff0 (or /refuse) - Turn down the duel you were challenged to. Nothing is charged.', player)
 		await self.instance.chat('$fff/duelbet <login> <amount>$ff0 (or /back) - Back one of the two players in the running duel. One-click buttons appear on the widget while a duel runs.', player)
-		await self.instance.chat('$fff/duels$ff0 (or /duel list, /dueltop) - The duel record board: who has won the most duels here.', player)
-		await self.instance.chat('$fff/pace$ff0 (or /form, /racetop) - Who actually drives fast: every race on record, rated by finishing position against the field.', player)
+		await self.instance.chat('$fff/duels$ff0 (or /duel list, /dueltop) - Top duellists: who has won the most duels here.', player)
+		await self.instance.chat('$fff/pace$ff0 (or /form, /racetop) - Top drivers: who actually drives fast, rated by finishing position against the field.', player)
 
 	async def chat_help_admin(self, player, **kwargs):
 		await self.instance.chat('$ff0--- BetPluggin Admin Commands ---', player)

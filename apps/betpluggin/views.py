@@ -271,14 +271,27 @@ class BetNavMixin:
 
 		# The colour of each button is the colour of the window it opens (BetListStyleMixin.ACCENTS), so
 		# the panel that appears is visibly the one that was clicked.
+		#
+		# Four of the six windows are rankings, so the label cannot be the word "ranking" -- it has to be
+		# *who* is ranked. "Leaderboard" for one of them implied the other three were something else; a
+		# player reading "Leaderboard / Duel record / Pace" had no way to guess that all three are the
+		# same kind of table with a different population in it. Naming the three boards of people alike
+		# ("Top bettors / Top duellists / Top drivers") makes the difference between them the only thing
+		# the eye has to read. "Best bets" stays outside that family on purpose: it is the one board that
+		# ranks opportunities rather than people, which is exactly the distinction worth keeping visible.
+		#
+		# Widths: buttons are laid out right-to-left from x=215.5, each eating `width + 3`, and the
+		# search magnifier ends at x=61 -- so the widths may total at most 136.5. These are
+		# ceil(len(label) * 1.75) + 5, which totals 134 and leaves the bar 2.5 units of air. Adding a
+		# seventh button, or a longer label, means taking the room from another one.
 		accents = BetListStyleMixin.ACCENTS
 		entries = [
-			('market', 'Market', 20, accents['blue']['button'], to_market),
-			('targets', 'Who to bet on', 26, accents['green']['button'], to_targets),
-			('leaderboard', 'Leaderboard', 24, accents['gold']['button'], to_leaderboard),
-			('duels', 'Duel record', 22, accents['orange']['button'], to_duels),
-			('pace', 'Pace', 14, accents['purple']['button'], to_pace),
-			('wallet', 'My stats', 20, accents['teal']['button'], to_wallet),
+			('market', 'Market', 16, accents['blue']['button'], to_market),
+			('targets', 'Best bets', 21, accents['green']['button'], to_targets),
+			('leaderboard', 'Top bettors', 25, accents['gold']['button'], to_leaderboard),
+			('duels', 'Top duellists', 28, accents['orange']['button'], to_duels),
+			('pace', 'Top drivers', 25, accents['purple']['button'], to_pace),
+			('wallet', 'My stats', 19, accents['teal']['button'], to_wallet),
 		]
 		# The current window's button keeps its slot and its hue, at a third of the alpha -- same shape,
 		# same place, visibly switched off. `action` is left in the dict because the dispatcher indexes
@@ -753,11 +766,13 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 			'width': 24,
 		},
 		{
-			'name': 'Multiplier',
+			# "now", because the column four places to its right is the same quantity averaged over this
+			# player's history. Unqualified, the two were read as one number printed twice.
+			'name': 'Multiplier now',
 			'index': 'odds',
 			'sorting': False,
 			'searching': False,
-			'width': 17,
+			'width': 23,
 		},
 		# The two history columns below are the whole point of keeping target stats: without them the
 		# only thing distinguishing two players in this list is how much other people happened to bet on
@@ -770,11 +785,11 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 			'width': 16,
 		},
 		{
-			'name': 'Usual multiplier',
+			'name': 'Usually',
 			'index': 'avg_odds',
 			'sorting': False,
 			'searching': False,
-			'width': 25,
+			'width': 15,
 		},
 		{
 			'name': 'Your bet',
@@ -791,7 +806,7 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 			'width': 18,
 		},
 	]
-	# Column widths above total 143, leaving 75 of the list template's 218-unit row for the bet buttons in
+	# Column widths above total 139, leaving 79 of the list template's 218-unit row for the bet buttons in
 	# get_actions() -- which is exactly what they ask for at five quick amounts. Every width here is also
 	# at or above what its own header needs to be drawn in full, so nothing spills into the next column.
 	# These are wishes rather than promises: get_fields() re-fits them against the strip the buttons
@@ -1168,7 +1183,10 @@ class BetMarketView(BetListStyleMixin, BetNavMixin, ManualListView):
 class BetLeaderboardView(BetListStyleMixin, BetNavMixin, ManualListView):
 	nav_key = 'leaderboard'
 	accent = 'gold'
-	title = 'BetPluggin -- leaderboard'
+	# The title bar is the one line of a window nobody can miss, so it carries the sentence that says
+	# what the board is a ranking *of*. The plugin's own name used to sit there instead, which is the one
+	# thing a player reading a BetPluggin window already knows.
+	title = 'Who bets best -- ranked by profit, over every bet ever settled here'
 	icon_style = 'Icons128x128_1'
 	icon_substyle = 'Statistics'
 
@@ -1237,7 +1255,7 @@ class BetTargetsView(BetListStyleMixin, BetNavMixin, ManualListView):
 
 	nav_key = 'targets'
 	accent = 'green'
-	title = 'BetPluggin -- who to bet on'
+	title = "Who is worth betting on -- \"Bettors' profit\" is what backing them paid"
 	icon_style = 'Icons128x128_1'
 	icon_substyle = 'Statistics'
 
@@ -1247,11 +1265,17 @@ class BetTargetsView(BetListStyleMixin, BetNavMixin, ManualListView):
 		# Duels sit next to the badge rather than at the far end: it is the one number on this board a
 		# player earns by driving instead of by being picked, so it is the one they came to look at.
 		{'name': 'Duels won',        'index': 'duel_form', 'sorting': False, 'searching': False, 'width': 20},
-		{'name': 'Times bet on',     'index': 'backed',    'sorting': False, 'searching': False, 'width': 18},
+		{'name': 'Times bet on',     'index': 'backed',    'sorting': False, 'searching': False, 'width': 19},
 		{'name': 'Wins',             'index': 'form',      'sorting': False, 'searching': False, 'width': 16},
 		{'name': 'Planets bet',      'index': 'staked',    'sorting': False, 'searching': False, 'width': 18},
-		{'name': "Backers' profit",  'index': 'net',       'sorting': False, 'searching': False, 'width': 21},
-		{'name': 'Usual multiplier', 'index': 'avg_odds',  'sorting': False, 'searching': False, 'width': 21},
+		# "Backers' profit" asked the reader to already know that someone who bets on you is your backer.
+		# "Bettors" is the word the navigation bar now uses for the same people ("Top bettors"), so the
+		# concept has one name across the whole plugin instead of one per window.
+		{'name': "Bettors' profit", 'index': 'net',       'sorting': False, 'searching': False, 'width': 24},
+		# "Usually" rather than "Usual multiplier": in the market this column sits one place away from the
+		# live "Multiplier now", and two headers three quarters identical were read as the same number
+		# twice. Here there is no live column to confuse it with, but the two windows have to agree.
+		{'name': 'Usually',         'index': 'avg_odds',  'sorting': False, 'searching': False, 'width': 15},
 	]
 
 	def __init__(self, app):
@@ -1293,7 +1317,7 @@ class BetDuelBoardView(BetListStyleMixin, BetNavMixin, ManualListView):
 
 	nav_key = 'duels'
 	accent = 'orange'
-	title = 'BetPluggin -- duel record'
+	title = 'Head to head -- ranked by duels won, not by planets'
 	icon_style = 'Icons128x128_1'
 	icon_substyle = 'Solo'
 
@@ -1358,7 +1382,7 @@ class BetPaceView(BetListStyleMixin, BetNavMixin, ManualListView):
 
 	nav_key = 'pace'
 	accent = 'purple'
-	title = 'BetPluggin -- pace'
+	title = 'Who drives fastest -- Rating: 1.000 = always first, 0.000 = always last'
 	icon_style = 'Icons128x128_1'
 	icon_substyle = 'Rankings'
 
@@ -1368,9 +1392,13 @@ class BetPaceView(BetListStyleMixin, BetNavMixin, ManualListView):
 		{'name': 'Rating',   'index': 'rating',    'sorting': False, 'searching': False, 'width': 16},
 		{'name': 'Races',    'index': 'races',     'sorting': False, 'searching': False, 'width': 13},
 		{'name': 'Wins',     'index': 'wins',      'sorting': False, 'searching': False, 'width': 13},
-		{'name': 'Avg place','index': 'avg_place', 'sorting': False, 'searching': False, 'width': 19},
-		{'name': 'Field',    'index': 'avg_field', 'sorting': False, 'searching': False, 'width': 13},
-		{'name': 'Ranked',   'index': 'status',    'sorting': False, 'searching': False, 'width': 32},
+		# "Avg place" out of "Field" was two abbreviations for one idea: where they finish, out of how
+		# many. Spelled out and named after what is actually counted, the pair reads as the sentence it
+		# is -- 3.4th out of 7.1 drivers. And "Ranked" as a header over a cell that says "ranked" told
+		# the reader nothing; the cell already speaks, so the header only has to say what it is about.
+		{'name': 'Average place', 'index': 'avg_place', 'sorting': False, 'searching': False, 'width': 21},
+		{'name': 'Drivers',       'index': 'avg_field', 'sorting': False, 'searching': False, 'width': 14},
+		{'name': 'Status',        'index': 'status',    'sorting': False, 'searching': False, 'width': 32},
 	]
 
 	def __init__(self, app):
