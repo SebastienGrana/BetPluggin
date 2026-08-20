@@ -23,6 +23,7 @@ winners, proportional to their stake, and paid from the server's own Planets bal
 keeping their stakes.
 """
 import asyncio
+import datetime
 import logging
 import math
 import time
@@ -41,7 +42,7 @@ from pyplanet.contrib.command import Command
 from pyplanet.contrib.setting import Setting
 
 from .duel import DuelManager
-from .models import Bet
+from .models import Bet, RaceResult
 from .views import (
 	BetWidget, BetMarketView, BetLeaderboardView, BetResultView, BetTargetsView, BetDuelBoardView
 )
@@ -153,6 +154,11 @@ class BetplugginApp(AppConfig):
 		# next map/round starts while it's still waiting on the podium.
 		# Shape: {'scores': dict|None, 'event': asyncio.Event}
 		self.scores_slot = None
+
+		# id of the last map whose finishing order was written to RaceResult. `scores` fires more than
+		# once at the end of a map (EndMap, then EndMatch), and both carry a final standing -- without
+		# this the same race would be recorded twice and count double towards a driver's strength.
+		self.results_recorded_for = None
 
 		self.widget = None
 
@@ -879,6 +885,11 @@ class BetplugginApp(AppConfig):
 		# of every following map treated as a warmup lap, and betting would never resolve again.
 		self.warmup_active = False
 
+		# Cleared per map, not just set once: map.id alone can't tell a fresh play of the same map apart
+		# from the one that was just recorded, and the same map coming back around (map list looping,
+		# an admin replaying it) is still a race worth counting.
+		self.results_recorded_for = None
+
 		async with self.lock:
 			self.current_bets = []
 			self.current_round_number = None
@@ -1156,12 +1167,25 @@ class BetplugginApp(AppConfig):
 		# payload -- map_points are cumulative, so even a mid-map one is a usable fallback -- but only
 		# wake a waiting _resolve_market on a final section. Setting the event on an EndRound payload
 		# would let a map resolve against the standings of the second-to-last round.
+		label = (section or '').lower()
+		payload = dict(players=players, winner_player=winner_player, section=section)
+
+		# Deliberately before the slot check below, which returns whenever no market was ever opened:
+		# the history the odds model needs has to be built from *every* race, including the ones nobody
+		# bet on. Only on EndMap -- EndMatch carries a final standing too, but it lands after the server
+		# has already moved on to the next map, so map_manager would attribute it to the wrong one.
+		if not label or 'endmap' in label:
+			try:
+				await self._record_race_results(payload)
+			except Exception as e:
+				# Bookkeeping must never cost anyone a payout: the pot is settled a few lines down.
+				logger.exception('BetPluggin: recording the finishing order failed: %s', e)
+
 		slot = self.scores_slot
 		if slot is None:
 			return
-		slot['scores'] = dict(players=players, winner_player=winner_player, section=section)
+		slot['scores'] = payload
 
-		label = (section or '').lower()
 		if not label or any(final in label for final in FINAL_SCORE_SECTIONS):
 			slot['event'].set()
 			# Resolve right now instead of waiting for map_end: the final `scores` payload lands
@@ -1470,6 +1494,81 @@ class BetplugginApp(AppConfig):
 			self.result_view_task = asyncio.ensure_future(view.show_for(RESULT_POPUP_SECONDS))
 
 		await self._refresh_ui()
+
+	async def _record_race_results(self, last_scores):
+		"""
+		Write the finishing order of the map that just ended to RaceResult, one row per driver.
+
+		Nothing in the plugin reads this table yet -- see the model's docstring. It is being filled now
+		because the history cannot be back-filled: a race that went unrecorded is gone, and the odds of
+		docs/conception-paris-position.md need roughly thirty of them before they mean anything.
+		"""
+		map = self.instance.map_manager.current_map
+		if map is None:
+			return
+		if self.results_recorded_for == map.id:
+			return
+
+		ranked = self.rank_players(last_scores, by_map_points=self.scope == Bet.SCOPE_ROUND)
+		if len(ranked) < 2:
+			# A driver alone on the server finishes first every time, which says nothing about how good
+			# they are -- and the normalised score the strength model uses divides by field_size - 1.
+			# Not a race, so not a result.
+			return
+
+		# Set before the insert, not after: `await` yields, and the EndMatch payload arriving in the
+		# meantime would find the guard still clear and record the same race a second time.
+		self.results_recorded_for = map.id
+
+		now = datetime.datetime.now()
+		rows = [
+			dict(
+				map=map.id,
+				player=entry['player'].id,
+				position=position,
+				field_size=len(ranked),
+				points=entry.get('map_points'),
+				time=entry['best_race_time'] if (entry.get('best_race_time') or 0) > 0 else None,
+				# insert_many bypasses TimedModel.create(), which is what normally stamps these.
+				created_at=now,
+				updated_at=now,
+			)
+			for position, entry in enumerate(ranked, start=1)
+		]
+		await RaceResult.execute(RaceResult.insert_many(rows))
+		logger.info(
+			'BetPluggin: recorded the finishing order of %d driver(s) on %s.', len(rows), map.name
+		)
+
+	@classmethod
+	def rank_players(cls, last_scores, by_map_points=False):
+		"""
+		The whole finishing order, best first -- the same question determine_winner_login and
+		determine_map_winner_login answer for the top spot only, decided on the same two rules.
+
+		Drivers with nothing to show for the map are left out rather than ranked last. A spectator and
+		someone who disconnected on the first lap did not come last, they did not race, and counting
+		them would inflate every real driver's position and the field size along with it.
+		"""
+		if not last_scores:
+			return []
+
+		def driven_time(entry):
+			value = entry.get('best_race_time') or 0
+			return value if value > 0 else None
+
+		players = [p for p in last_scores.get('players', []) if p.get('player')]
+
+		if by_map_points:
+			ranked = [p for p in players if (p.get('map_points') or 0) > 0 or driven_time(p)]
+			# Points first, driven time as the tie-break: determine_map_winner_login's ordering exactly,
+			# so the driver this puts first is always the one the market just paid out on.
+			ranked.sort(key=lambda p: (-(p.get('map_points') or 0), driven_time(p) or 9999999))
+		else:
+			ranked = [p for p in players if driven_time(p)]
+			ranked.sort(key=driven_time)
+
+		return ranked
 
 	@classmethod
 	def determine_map_winner_login(cls, last_scores):

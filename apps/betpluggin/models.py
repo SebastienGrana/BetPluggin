@@ -109,3 +109,44 @@ class Bet(TimedModel):
 	A *promised* multiplier, unlike `odds` which is only the indicative pari-mutuel quote at the time
 	of the bet. Set on bets the server prices itself; null on every pari-mutuel bet, including duels.
 	"""
+
+
+class RaceResult(TimedModel):
+	"""
+	One driver's finishing position on one map.
+
+	Written at the podium from the same `scores` payload the market settles on, for every race --
+	whether or not anybody bet on it. Nothing reads this table yet: it exists so that by the time the
+	position bets of docs/conception-paris-position.md ship, there is already enough history to price
+	them with. See that document's section 9 -- the model needs roughly thirty races before a driver's
+	estimated strength means anything, and that history cannot be back-filled.
+
+	Deliberately not tied to the Bet table in any way. It is a record of what happened on track, and
+	stays true whether or not there was a market open at the time.
+	"""
+
+	map = ForeignKeyField(Map, index=True)
+	player = ForeignKeyField(Player, index=True)
+
+	position = IntegerField(index=True)
+	"""
+	Finishing position, 1 = won. Computed by the plugin the same way the winner is (points then time in
+	round-based modes, driven time otherwise) rather than taken from the callback's own `rank`, which
+	ranks every connected player whether they drove or not.
+	"""
+
+	field_size = IntegerField()
+	"""
+	How many drivers were ranked in this race.
+
+	Stored rather than counted back from the rows because a position is meaningless without it: 3rd of
+	4 is a bad race, 3rd of 20 is a good one, and the normalised score the strength model uses divides
+	by exactly this number. Counting rows would give the same answer today but would quietly change
+	meaning the day a race is recorded in more than one go.
+	"""
+
+	points = IntegerField(null=True)
+	"""Map points at the end of the map. Null in modes that award none (TimeAttack)."""
+
+	time = IntegerField(null=True)
+	"""Best race time in milliseconds, or null if the driver never set one."""

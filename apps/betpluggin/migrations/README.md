@@ -99,3 +99,12 @@ appeared. `docker compose logs betpluggin | grep -i migration` shows either
 
 Dropping the whole database to "start clean" defeats the point: it puts you back on the faked path,
 which is the one that always passes.
+
+## RaceResult (deployment 2)
+
+`RaceResult` is a brand-new model with no migration file -- it doesn't need one, `create_tables()`
+builds it from `models.py` on first boot like any new table. That is exactly what makes it dangerous
+to ship early: creating a new table is what flags an app for the initial-setup fake-apply described
+above. **`RaceResult` must not reach a server before migration `001` has actually run there** (confirm
+with `DESCRIBE bet;`, per the top of this file) -- ship it in a second, later deploy, never the same
+one as a still-pending migration.
