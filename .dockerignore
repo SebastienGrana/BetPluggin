@@ -1,0 +1,15 @@
+# The dedicated server's UserData is 2.4 GB and is bind-mounted at runtime
+# (see docker-compose.yml) -- sending it as build context made `docker build`
+# transfer ~800 MB and repeatedly die at the final COPY with an EOF from the
+# daemon. It is already gitignored; it has no business being in the image.
+docker/tm-dedicated-userdata/
+
+.git/
+.venv/
+__pycache__/
+*.pyc
+tmp/
+logs/
+database.db
+pyplanet.pid
+.env
